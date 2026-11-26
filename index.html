@@ -166,6 +166,8 @@ nav button.plus{flex:none;width:58px;height:58px;margin:-22px 6px 0;border-radiu
     </div>
     <h2>Bütçe <button class="linkbtn" id="editBudget">Ayarla</button></h2>
     <div class="card" id="budgetBox"></div>
+    <h2>🔁 Düzenli gelirler <button class="linkbtn" id="addRec">+ Ekle</button></h2>
+    <div class="card" id="recBox"></div>
     <h2>Nereye gitti?</h2>
     <div class="card" id="donutBox"></div>
     <h2>Yaklaşan ödemeler <button class="linkbtn" data-go="bills">Tümü</button></h2>
@@ -257,13 +259,13 @@ const COLORS = ['#16a34a','#3d8bff','#f59e0b','#e5484d','#a855f7','#14b8a6','#ec
 
 const DEF_OUT = [['market','Market','🛒'],['yemek','Yemek','🍔'],['ulasim','Ulaşım','🚗'],['fatura','Fatura','💡'],['kira','Kira','🏠'],['saglik','Sağlık','💊'],
   ['giyim','Giyim','👕'],['eglence','Eğlence','🎬'],['abonelik','Abonelik','📺'],['egitim','Eğitim','📚'],['borc','Kart/Borç','💳'],['diger','Diğer','📦']];
-const DEF_IN = [['maas','Maaş','💼'],['ek','Ek gelir','💰'],['yatirim','Yatırım','📈'],['diger_in','Diğer','📥']];
+const DEF_IN = [['maas','Maaş','💼'],['kira_in','Kira geliri','🏠'],['ek','Ek gelir','💰'],['yatirim','Yatırım','📈'],['diger_in','Diğer','📥']];
 const toCats = a => a.map(([id,name,emoji])=>({id,name,emoji}));
 
 const defaults = () => ({
   tx:[], cats:{out:toCats(DEF_OUT), in:toCats(DEF_IN)}, budget:{total:0, cats:{}}, goals:[], bills:[], assets:[],
   prices:{}, pricesAt:0, notif:{hour:10, daysBefore:2, subscribed:false}, testAt:0,
-  people:[], needs:[], ui:{billSeg:'pay'}, migrated:false
+  people:[], needs:[], ui:{billSeg:'pay'}, migrated:false, recurring:[]
 });
 let S;
 try { S = Object.assign(defaults(), JSON.parse(localStorage.getItem(KEY)||'{}')); } catch(e){ S = defaults(); }
@@ -321,6 +323,7 @@ function drawTxForm(){
     <div class="catgrid">${cats.map(c=>`<button data-cat="${c.id}" class="${f.cat===c.id?'on':''}"><div>${c.emoji}</div>${esc(c.name)}</button>`).join('')}</div>
     <div class="f2"><label class="f"><span>Tarih</span><input type="date" id="fDate" value="${f.date}"></label>
     <label class="f"><span>Not</span><input id="fNote" value="${esc(f.note||'')}" placeholder="İsteğe bağlı" autocomplete="off"></label></div>
+    ${f.type==='in' && !f.id ? '<button class="linkbtn" data-a="rec" style="display:block;margin:0 auto 14px">🔁 Bunu her ay düzenli ekle</button>' : ''}
     <button class="btn" data-a="save">Kaydet</button>
     ${f.id?'<button class="btn danger" data-a="del">İşlemi sil</button>':''}`, txFormClick);
   if(!f.id) setTimeout(()=>$('#fAmt')?.focus(),300);
@@ -330,6 +333,7 @@ function txFormClick(e){
   const b=e.target.closest('button'); if(!b) return;
   if(b.dataset.type){ readTxForm(); if(form.type!==b.dataset.type){ form.type=b.dataset.type; form.cat=''; } drawTxForm(); return; }
   if(b.dataset.cat){ $$('#shBody .catgrid button').forEach(x=>x.classList.toggle('on',x===b)); form.cat=b.dataset.cat; return; }
+  if(b.dataset.a==='rec'){ readTxForm(); return recForm(null, {name:form.note || (form.cat?catOf('in',form.cat).name:''), amount:form.amount>0?form.amount:0, cat:form.cat||'maas'}); }
   if(b.dataset.a==='del'){ if(!confirm('Bu işlem silinsin mi?')) return; S.tx=S.tx.filter(t=>t.id!==form.id); save(); closeSheet(); renderAll(); toast('Silindi'); return; }
   if(b.dataset.a==='save'){
     readTxForm();
@@ -364,13 +368,85 @@ function renderTx(){
     return `<div class="dayhead"><span>${dayName(d)}</span><span class="num">${fmt(net,true)}</span></div><div class="card">${by[d].map(txRow).join('')}</div>`; }).join('');
 }
 function txRow(t){ const c=catOf(t.type,t.cat);
-  return `<div class="row tap" data-tx="${t.id}"><div class="ic">${c.emoji}</div><div class="t"><b>${esc(t.note||c.name)}</b><span>${esc(c.name)}${t.bill?' · ödeme':''}</span></div><div class="amt num ${t.type==='in'?'pos':''}">${t.type==='in'?'+':'−'}${fmt(t.amount)}</div></div>`; }
+  return `<div class="row tap" data-tx="${t.id}"><div class="ic">${c.emoji}</div><div class="t"><b>${esc(t.note||c.name)}</b><span>${esc(c.name)}${t.bill?' · ödeme':''}${t.rec?' · 🔁 düzenli':''}</span></div><div class="amt num ${t.type==='in'?'pos':''}">${t.type==='in'?'+':'−'}${fmt(t.amount)}</div></div>`; }
 $('#txList').onclick = e => { const r=e.target.closest('[data-tx]'); if(r) txForm(S.tx.find(t=>t.id===r.dataset.tx)); };
 $('#txCats').onclick = e => { const b=e.target.closest('[data-f]'); if(!b) return; txFilter=b.dataset.f; renderTx(); };
 $('#txSearch').oninput = e => { txQ=e.target.value.trim(); renderTx(); };
 
+// ---------- düzenli gelirler ----------
+function migrateCats(){
+  if((S.catsV||1)>=2) return;
+  if(!S.cats.in.some(c=>c.id==='kira_in')){ const i=S.cats.in.findIndex(c=>c.id==='maas'); S.cats.in.splice(i+1,0,{id:'kira_in', name:'Kira geliri', emoji:'🏠'}); }
+  S.catsV=2; save();
+}
+function nextRecDate(r){
+  const t=today(), m0 = r.start>mkey() ? r.start : mkey(), d=dueOf(m0,r.day);
+  return (d>t || (d===t && !r.posted[m0])) ? d : dueOf(addMonths(m0,1), r.day);
+}
+function applyRecurring(){
+  const t=today(), cur=mkey(), made=[];
+  for(const r of S.recurring){
+    if(!r.on) continue;
+    for(let m=r.start; m<=cur; m=addMonths(m,1)){
+      const d=dueOf(m,r.day); if(d>t || r.posted[m]) continue;
+      const tx={id:uid(), type:'in', amount:r.amount, cat:r.cat, note:r.name, date:d, rec:r.id};
+      S.tx.push(tx); r.posted[m]=tx.id; made.push([r,tx]);
+    }
+  }
+  if(made.length){ save(); const [r,tx]=made[0];
+    toast(made.length===1 ? `${catOf('in',r.cat).emoji} ${r.name} geldi: ${fmt(tx.amount,true)}` : `🔁 ${made.length} düzenli gelir eklendi`); }
+  return made.length;
+}
+function recForm(r, pre){
+  const f = r ? {...r} : {name:'', amount:0, cat:'maas', day:new Date().getDate(), on:true, ...(pre||{})};
+  const nowTxt = d => ` Bu ayınkini (${shortDate(dueOf(mkey(),d))}) de şimdi ekle`;
+  const read = () => { f.name=$('#rName').value.trim(); f.amount=parseAmt($('#rAmt').value); f.day=+$('#rDay').value; };
+  const click = e => {
+    const b=e.target.closest('button'); if(!b) return;
+    if(b.dataset.rcat){ f.cat=b.dataset.rcat; $$('#shBody [data-rcat]').forEach(x=>x.classList.toggle('on',x===b)); if(!$('#rName').value.trim()) $('#rName').value=catOf('in',f.cat).name; return; }
+    if(b.dataset.a==='ron'){ f.on=!f.on; b.classList.toggle('on',f.on); return; }
+    if(b.dataset.a==='del'){ if(!confirm(`"${r.name}" düzenli geliri silinsin mi? (Geçmiş kayıtlar silinmez)`)) return;
+      S.recurring=S.recurring.filter(x=>x.id!==r.id); save(); closeSheet(); renderAll(); return toast('Silindi'); }
+    if(b.dataset.a!=='save') return;
+    read();
+    if(!f.name) return toast('Ad yaz'); if(!(f.amount>0)) return toast('Tutarı yaz');
+    const t=today(), thisDue=dueOf(mkey(),f.day), amount=Math.round(f.amount*100)/100;
+    if(r){
+      const x=S.recurring.find(y=>y.id===r.id), wasOff=!x.on;
+      Object.assign(x,{name:f.name, amount, cat:f.cat, day:f.day, on:f.on});
+      if(wasOff && x.on){ const s0 = thisDue>=t ? mkey() : addMonths(mkey(),1); if(x.start<s0) x.start=s0; } // tekrar açılınca geçmiş ayları doldurma
+    } else {
+      const now = $('#rNow') && $('#rNow').checked;
+      S.recurring.push({id:uid(), name:f.name, amount, cat:f.cat, day:f.day, start:(thisDue>=t || now) ? mkey() : addMonths(mkey(),1), posted:{}, on:true});
+    }
+    save(); closeSheet(); const n=applyRecurring(); renderAll(); if(!n) toast('🔁 Düzenli gelir kaydedildi');
+  };
+  const past = !r && f.day<new Date().getDate();
+  openSheet(r?'Düzenli geliri düzenle':'Yeni düzenli gelir', `
+    <label class="f"><span>Ad</span><input id="rName" value="${esc(f.name)}" placeholder="Örn: Maaş, Daire kirası" autocomplete="off"></label>
+    <div class="f2"><label class="f"><span>Tutar</span><input id="rAmt" inputmode="decimal" value="${amtStr(f.amount)}" placeholder="0 ₺"></label>
+    <label class="f"><span>Her ayın</span><select id="rDay">${Array.from({length:31},(_,i)=>`<option value="${i+1}" ${f.day===i+1?'selected':''}>${i+1}. günü</option>`).join('')}</select></label></div>
+    <div class="catgrid" style="margin-top:0">${S.cats.in.map(c=>`<button data-rcat="${c.id}" class="${f.cat===c.id?'on':''}"><div>${c.emoji}</div>${esc(c.name)}</button>`).join('')}</div>
+    ${r?'':`<label class="chk" id="rNowWrap" style="${past?'':'display:none'}"><input type="checkbox" id="rNow"><span>${nowTxt(f.day)}</span></label>`}
+    ${r?`<div class="card" style="margin-bottom:12px"><div class="nrow"><span>Aktif</span><button class="tgl ${f.on?'on':''}" data-a="ron" aria-label="Aktif"></button></div></div>`:''}
+    <p class="note">${r?'Tutar değişikliği sonraki aylardan itibaren geçerli olur; geçmiş kayıtlar aynen kalır.':'O gün gelince gelir kaydını ben açarım. Bir ay tutar farklı gelirse İşlemler\'den o kaydı düzeltirsin.'}</p>
+    <button class="btn" data-a="save" style="margin-top:10px">Kaydet</button>${r?'<button class="btn danger" data-a="del">Sil</button>':''}`, click);
+  if(!r) $('#rDay').onchange = () => { const d=+$('#rDay').value; $('#rNowWrap').style.display = d<new Date().getDate() ? '' : 'none'; $('#rNowWrap span').textContent=nowTxt(d); };
+}
+function renderRec(){
+  const rs=S.recurring;
+  $('#recBox').innerHTML = rs.length
+    ? rs.map(r=>{ const c=catOf('in',r.cat); return `<div class="row tap" data-rec="${r.id}" style="${r.on?'':'opacity:.5'}"><div class="ic">${c.emoji}</div>
+        <div class="t"><b>${esc(r.name)}</b><span>her ayın ${r.day}. günü · ${r.on?'sonraki '+shortDate(nextRecDate(r)):'kapalı'}</span></div><div class="amt num pos">+${fmt(r.amount)}</div></div>`; }).join('')
+      + `<div class="nrow"><span class="mut" style="font-size:13px">Aylık toplam</span><b class="num pos">+${fmt(rs.filter(r=>r.on).reduce((s,r)=>s+r.amount,0))}</b></div>`
+    : '<div class="empty">Maaş, kira gibi her ay gelen gelirlerini ekle;<br>günü gelince kaydı ben açayım.</div>';
+}
+$('#addRec').onclick = () => recForm();
+$('#recBox').onclick = e => { const r=e.target.closest('[data-rec]'); if(r) recForm(S.recurring.find(x=>x.id===r.dataset.rec)); };
+
 // ---------- özet ----------
 function renderHome(){
+  renderRec();
   const s=sums(curM);
   $('#hLeft').textContent=fmt(s.i-s.o); $('#hIn').textContent=fmt(s.i); $('#hOut').textContent=fmt(s.o);
   // bütçe
@@ -971,9 +1047,9 @@ function renderAll(){
   $$('.mTitle').forEach(x=>x.textContent=monthName(curM)+(curM===mkey()?'':''));
   renderHome(); renderTx(); renderBills(); renderPeople(); renderNeeds(); renderAssets(); renderNotif();
 }
-document.addEventListener('visibilitychange', ()=>{ if(!document.hidden){ renderAll(); fetchPrices(); } });
+document.addEventListener('visibilitychange', ()=>{ if(!document.hidden){ applyRecurring(); renderAll(); fetchPrices(); } });
 
-migrate(); setSeg(S.ui.billSeg||'pay'); renderAll(); writeSnap(); syncPush(); fetchPrices();
+migrate(); migrateCats(); applyRecurring(); setSeg(S.ui.billSeg||'pay'); renderAll(); writeSnap(); syncPush(); fetchPrices();
 const qp=new URLSearchParams(location.search).get('tab'); if(qp){ history.replaceState(null,'',location.pathname); goTab(qp); }
 if('serviceWorker' in navigator && location.protocol.startsWith('http')){
   navigator.serviceWorker.register('sw.js').catch(()=>{});
