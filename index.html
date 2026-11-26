@@ -477,7 +477,8 @@ function imageB64(file){
       URL.revokeObjectURL(url); res(c.toDataURL('image/jpeg',0.85).split(',')[1]); };
     img.onerror=()=>rej(new Error('Görsel açılamadı')); img.src=url; });
 }
-const stmtCards = () => [...new Set(S.bills.filter(b=>b.kind==='kart').map(b=>b.name).concat(['TEB','VakıfBank']))];
+const stmtCards = () => { const mine=S.bills.filter(b=>b.kind==='kart').map(b=>b.name), low=mine.map(n=>n.toLocaleLowerCase('tr'));
+  return [...new Set(mine.concat(['TEB','VakıfBank'].filter(g=>!low.some(n=>n.includes(g.toLocaleLowerCase('tr'))))))]; };
 let stmt={card:'', file:null, pw:false};
 function stmtSheet(){
   if(!stmt.card) stmt.card=stmtCards()[0];
@@ -520,7 +521,7 @@ function reviewSheet(data){
   const valid=(t,c)=>S.cats[t].some(x=>x.id===c);
   const items=(data.items||[]).filter(it=>it.amount>0 && /^\d{4}-\d{2}-\d{2}$/.test(it.date)).map(it=>{
     const type=it.type==='in'?'in':'out', cat=valid(type,it.cat)?it.cat:(type==='in'?'diger_in':'diger');
-    const dup=S.tx.some(t=>t.type===type && Math.abs(t.amount-it.amount)<0.01 && Math.abs(diffDays(t.date,it.date))<=1);
+    const dup=S.tx.some(t=>(!t.src || t.src===stmt.card) && t.type===type && Math.abs(t.amount-it.amount)<0.01 && Math.abs(diffDays(t.date,it.date))<=1);
     return {...it, type, cat: valid(type,cat)?cat:S.cats[type][0].id, dup, sel:!dup};
   });
   rv={data, items, card:stmt.card};
@@ -865,7 +866,7 @@ document.addEventListener('click', e => {
 function payBill(b){
   const o=nextOcc(b); if(!o) return;
   const inc=b.kind==='alacak';
-  const skipTx = b.kind==='kart' && Object.values(S.stmtCards||{}).some(t=>Date.now()-t<45*864e5);
+  const skipTx = b.kind==='kart' && Date.now()-((S.stmtCards||{})[b.name]||0)<45*864e5;
   openSheet(inc?'Alındı olarak işaretle':'Ödendi olarak işaretle', `
     <p class="sub">${esc(b.name)} · ${shortDate(o.date)}${b.kind==='taksit'?` · ${o.idx}/${b.count}. taksit`:''}</p>
     <input class="amtin num" id="pAmt" inputmode="decimal" value="${amtStr(b.amount)}" placeholder="0 ₺">
