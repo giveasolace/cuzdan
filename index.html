@@ -180,7 +180,7 @@ nav button.plus{flex:none;width:58px;height:58px;margin:-22px 6px 0;border-radiu
   <!-- İŞLEMLER -->
   <section class="view" id="v-tx">
     <div class="mnav"><button data-mn="-1" aria-label="Önceki ay">‹</button><b class="mTitle"></b><button data-mn="1" aria-label="Sonraki ay">›</button></div>
-    <button class="btn ghost" id="stmtBtn" style="margin-bottom:10px">🧾 Kredi kartı ekstresi yükle</button>
+    <button class="btn ghost" id="stmtBtn" style="margin-bottom:10px">🧾 Ekstre dosyası içe aktar</button>
     <div id="impUndo"></div>
     <input class="search" id="txSearch" placeholder="Ara (not, kategori)" autocomplete="off">
     <div class="chips" id="txCats"></div>
@@ -231,7 +231,6 @@ nav button.plus{flex:none;width:58px;height:58px;margin:-22px 6px 0;border-radiu
     <p class="sub" id="nStatus" style="margin-bottom:8px"></p>
     <div class="card" id="nRows"></div>
     <div class="btnrow" style="margin-top:10px"><button class="btn ghost" id="nOn">🔔 Bildirimleri aç</button><button class="btn ghost" id="nTest">Test gönder</button></div>
-    <div class="card pad" style="margin-top:10px"><b>🧾 Ekstre okuma</b><p class="note" id="stmtState"></p><div class="f2" style="align-items:flex-end;margin-top:8px"><label class="f"><span>Erişim kodu</span><input id="stmtTok" autocomplete="off" autocapitalize="characters" placeholder="XXXXX-XXXXX"></label><button class="btn small" id="stmtSave" style="margin-bottom:12px;height:46px">Kaydet</button></div></div>
     <div class="btnrow" style="margin-top:10px"><button class="btn ghost" id="editCats">🏷️ Kategoriler</button></div>
     <div class="btnrow" style="margin-top:10px"><button class="btn ghost" id="exp">Dışa aktar</button><label class="btn ghost" style="text-align:center">İçe aktar<input type="file" id="imp" accept="application/json" hidden></label></div>
     <button class="btn danger" id="wipe" style="margin-top:6px">Tüm verileri sil</button>
@@ -447,74 +446,31 @@ function renderRec(){
 $('#addRec').onclick = () => recForm();
 $('#recBox').onclick = e => { const r=e.target.closest('[data-rec]'); if(r) recForm(S.recurring.find(x=>x.id===r.dataset.rec)); };
 
-// ---------- ekstre içe aktarma (yapay zeka ile) ----------
-const PDFJS='https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js', PDFW='https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js';
-function loadPdfJs(){
-  if(window.pdfjsLib) return Promise.resolve(window.pdfjsLib);
-  return new Promise((res,rej)=>{ const s=document.createElement('script'); s.src=PDFJS;
-    s.onload=()=>{ window.pdfjsLib.GlobalWorkerOptions.workerSrc=PDFW; res(window.pdfjsLib); };
-    s.onerror=()=>rej(new Error('PDF okuyucu yüklenemedi (internet?)')); document.head.appendChild(s); });
-}
-async function pdfText(buf, password){
-  const lib=await loadPdfJs();
-  const doc=await lib.getDocument({data:buf, password:password||undefined}).promise;
-  const out=[];
-  for(let i=1;i<=doc.numPages;i++){
-    const tc=await (await doc.getPage(i)).getTextContent(), lines=[];
-    for(const it of tc.items){ if(!it.str || !it.str.trim()) continue;
-      const y=Math.round(it.transform[5]), x=it.transform[4];
-      let L=lines.find(l=>Math.abs(l.y-y)<=2); if(!L){ L={y, parts:[]}; lines.push(L); } L.parts.push([x,it.str]); }
-    lines.sort((a,b)=>b.y-a.y);
-    out.push(`--- Sayfa ${i} ---`);
-    for(const L of lines) out.push(L.parts.sort((a,b)=>a[0]-b[0]).map(p=>p[1]).join(' ').replace(/\s+/g,' ').trim());
-  }
-  return out.join('\n');
-}
-function imageB64(file){
-  return new Promise((res,rej)=>{ const img=new Image(), url=URL.createObjectURL(file);
-    img.onload=()=>{ const k=Math.min(1,1600/Math.max(img.width,img.height)), c=document.createElement('canvas');
-      c.width=Math.round(img.width*k); c.height=Math.round(img.height*k); c.getContext('2d').drawImage(img,0,0,c.width,c.height);
-      URL.revokeObjectURL(url); res(c.toDataURL('image/jpeg',0.85).split(',')[1]); };
-    img.onerror=()=>rej(new Error('Görsel açılamadı')); img.src=url; });
-}
+// ---------- ekstre dosyası içe aktarma (Claude'un hazırladığı JSON) ----------
 const stmtCards = () => { const mine=S.bills.filter(b=>b.kind==='kart').map(b=>b.name), low=mine.map(n=>n.toLocaleLowerCase('tr'));
   return [...new Set(mine.concat(['TEB','VakıfBank'].filter(g=>!low.some(n=>n.includes(g.toLocaleLowerCase('tr'))))))]; };
-let stmt={card:'', file:null, pw:false};
+let stmt={card:'', file:null};
 function stmtSheet(){
   if(!stmt.card) stmt.card=stmtCards()[0];
-  openSheet('🧾 Ekstre yükle', `
-    ${S.stmtToken?'':'<p class="note" style="color:var(--bad);font-weight:600">Önce Varlık → Ayarlar → 🧾 Ekstre okuma kısmına erişim kodunu gir.</p>'}
-    <p class="sub">Kredi kartı ekstresinin PDF'ini ya da fotoğrafını/ekran görüntüsünü seç. Yapay zeka okur, kategorilere ayırır; eklemeden önce sen onaylarsın.</p>
+  openSheet('🧾 Ekstre içe aktar', `
+    <p class="sub">Ekstreni bilgisayarda Claude'a ver; o okuyup sana bir <b>.json</b> dosyası hazırlar. Dosyayı telefona at (WhatsApp, e-posta, iCloud Drive) ve buradan seç. Eklemeden önce kontrol ekranı açılır.</p>
     <div class="chips wrap">${stmtCards().map(c=>`<button data-scard="${esc(c)}" class="${stmt.card===c?'on':''}">💳 ${esc(c)}</button>`).join('')}</div>
-    <label class="btn ghost" style="display:block;text-align:center;margin:6px 0 10px">📄 Dosya seç (PDF / foto)<input type="file" id="sFile" accept="application/pdf,image/*" hidden></label>
+    <label class="btn ghost" style="display:block;text-align:center;margin:6px 0 10px">📄 Dosya seç (.json)<input type="file" id="sFile" accept=".json,application/json,text/plain" hidden></label>
     <p class="note" id="sInfo" style="text-align:center;margin:0 0 10px">${stmt.file?esc(stmt.file.name):'Henüz dosya seçilmedi'}</p>
-    <label class="f" id="sPwWrap" style="${stmt.pw?'':'display:none'}"><span>PDF şifresi (bankanın verdiği)</span><input id="sPw" type="password" autocomplete="off"></label>
-    <button class="btn" data-a="go">🤖 Oku</button>
-    <p class="note" style="text-align:center">Okuma 10–40 saniye sürer; ekstre başı birkaç TL'lik API ücreti çıkar.</p>`, stmtClick);
-  $('#sFile').onchange = e => { stmt.file=e.target.files[0]||null; stmt.pw=false; $('#sPwWrap').style.display='none'; $('#sInfo').textContent=stmt.file?stmt.file.name:''; };
+    <button class="btn" data-a="go">İçe aktar</button>`, stmtClick);
+  $('#sFile').onchange = e => { stmt.file=e.target.files[0]||null; $('#sInfo').textContent=stmt.file?stmt.file.name:''; };
 }
 async function stmtClick(e){
   const b=e.target.closest('button'); if(!b) return;
   if(b.dataset.scard){ stmt.card=b.dataset.scard; $$('#shBody [data-scard]').forEach(x=>x.classList.toggle('on',x===b)); return; }
   if(b.dataset.a!=='go') return;
-  if(!S.stmtToken) return toast('Önce erişim kodunu gir (Varlık → Ayarlar)');
   if(!stmt.file) return toast('Dosya seç');
-  const busy = t => { b.disabled=!!t; b.textContent = t || '🤖 Oku'; };
   try{
-    const body={token:S.stmtToken, cats:{out:S.cats.out.map(c=>({id:c.id,name:c.name})), in:S.cats.in.map(c=>({id:c.id,name:c.name}))}, year:new Date().getFullYear()};
-    if(stmt.file.type==='application/pdf' || /\.pdf$/i.test(stmt.file.name)){
-      busy('PDF açılıyor…');
-      try{ body.text=await pdfText(await stmt.file.arrayBuffer(), $('#sPw')?.value); }
-      catch(err){ if(err && err.name==='PasswordException'){ stmt.pw=true; $('#sPwWrap').style.display=''; $('#sPw').focus(); busy(''); return toast(err.code===2?'Şifre yanlış':'Bu PDF şifreli, şifresini yaz'); } throw err; }
-      if(body.text.replace(/--- Sayfa \d+ ---|\s/g,'').length<40){ busy(''); return toast('PDF\'te metin yok (taranmış olabilir); ekran görüntüsü yükle'); }
-    } else { busy('Görsel hazırlanıyor…'); body.image={data:await imageB64(stmt.file), media_type:'image/jpeg'}; }
-    busy('🤖 Okunuyor… (10–40 sn)');
-    const r=await fetch(PUSH_URL+'/statement',{method:'POST', headers:{'content-type':'application/json'}, body:JSON.stringify(body)});
-    const j=await r.json().catch(()=>({}));
-    busy('');
-    if(!r.ok) return toast(j.error || ('Hata '+r.status));
-    reviewSheet(j);
-  }catch(err){ busy(''); toast(String(err.message||err).slice(0,70)); }
+    const d=JSON.parse(await stmt.file.text());
+    if(!d || !Array.isArray(d.items)) throw new Error('bad');
+    const m=d.card && stmtCards().find(c=>c.toLocaleLowerCase('tr')===String(d.card).toLocaleLowerCase('tr')); if(m) stmt.card=m;  // dosyadaki kart adı kayıtlı bir kartla eşleşiyorsa onu kullan
+    reviewSheet(d);
+  }catch(err){ toast('Bu dosya bir ekstre dosyası değil'); }
 }
 let rv=null;
 function reviewSheet(data){
@@ -529,7 +485,7 @@ function reviewSheet(data){
 }
 function reviewHead(){
   const s=rv.items.filter(x=>x.sel), out=s.filter(x=>x.type==='out').reduce((a,x)=>a+x.amount,0), inn=s.filter(x=>x.type==='in').reduce((a,x)=>a+x.amount,0);
-  return `<b>${esc(rv.data.card||rv.card)}</b>${rv.data.period?' · '+esc(rv.data.period):''}<br>
+  return `<b>💳 ${esc(rv.card)}</b>${rv.data.period?' · '+esc(rv.data.period):''}<br>
     <span class="num">${s.length}/${rv.items.length} seçili · harcama <b>${fmt(out)}</b>${inn?` · iade <b class="pos">${fmt(inn)}</b>`:''}</span>
     ${rv.data.total?`<br><span class="mut">Ekstredeki toplam: ${fmt(rv.data.total)}</span>`:''}`;
 }
@@ -571,8 +527,7 @@ function renderImpUndo(){
   const b=$('#impUndoBtn'); if(b) b.onclick=()=>{ if(!confirm('Son içe aktarılan ekstre işlemleri silinsin mi?')) return; S.tx=S.tx.filter(t=>t.imp!==li.id); delete S.lastImport; save(); renderAll(); toast('Geri alındı'); };
 }
 $('#stmtBtn').onclick = stmtSheet;
-$('#stmtSave').onclick = () => { S.stmtToken=$('#stmtTok').value.trim().toUpperCase(); save(); renderStmtState(); toast(S.stmtToken?'Erişim kodu kaydedildi':'Kod silindi'); };
-function renderStmtState(){ $('#stmtState').textContent = S.stmtToken ? '✅ Erişim kodu kayıtlı. İşlemler → 🧾 Ekstre yükle.' : 'Kurulumda sana verilen erişim kodunu gir.'; $('#stmtTok').value=S.stmtToken||''; }
+
 
 // ---------- özet ----------
 function renderHome(){
@@ -1085,13 +1040,13 @@ $('#editCats').onclick = drawCats;
 
 // yedek
 $('#exp').onclick = async () => {
-  const data=JSON.stringify({...S, stmtToken:undefined},null,1), name=`cuzdan-yedek-${today()}.json`, file=new File([data],name,{type:'application/json'});
+  const data=JSON.stringify(S,null,1), name=`cuzdan-yedek-${today()}.json`, file=new File([data],name,{type:'application/json'});
   if(navigator.canShare && navigator.canShare({files:[file]})){ try{ await navigator.share({files:[file], title:'Cüzdan yedek'}); return; }catch(e){ if(e.name==='AbortError') return; } }
   const a=document.createElement('a'); a.href=URL.createObjectURL(file); a.download=name; a.click();
 };
 $('#imp').onchange = e => {
   const f=e.target.files[0]; if(!f) return; const r=new FileReader();
-  r.onload=()=>{ try{ const d=JSON.parse(r.result); if(!Array.isArray(d.tx)) throw 0; const tok=S.stmtToken; S=Object.assign(defaults(),d); S.stmtToken=tok; save(); renderAll(); toast('Yedek yüklendi ✓'); }catch(_){ toast('Geçersiz yedek dosyası'); } };
+  r.onload=()=>{ try{ const d=JSON.parse(r.result); if(!Array.isArray(d.tx)) throw 0; S=Object.assign(defaults(),d); delete S.stmtToken; save(); renderAll(); toast('Yedek yüklendi ✓'); }catch(_){ toast('Geçersiz yedek dosyası'); } };
   r.readAsText(f); e.target.value='';
 };
 $('#wipe').onclick = () => { if(confirm('Tüm işlemler, ödemeler, varlıklar silinecek. Emin misin?')){ S=defaults(); save(); renderAll(); toast('Sıfırlandı'); } };
@@ -1177,12 +1132,12 @@ document.addEventListener('click', e => { const b=e.target.closest('[data-mn]');
 
 function renderAll(){
   $$('.mTitle').forEach(x=>x.textContent=monthName(curM)+(curM===mkey()?'':''));
-  renderImpUndo(); renderStmtState();
+  renderImpUndo();
   renderHome(); renderTx(); renderBills(); renderPeople(); renderNeeds(); renderAssets(); renderNotif();
 }
 document.addEventListener('visibilitychange', ()=>{ if(!document.hidden){ applyRecurring(); renderAll(); fetchPrices(); } });
 
-migrate(); migrateCats(); applyRecurring(); setSeg(S.ui.billSeg||'pay'); renderAll(); writeSnap(); syncPush(); fetchPrices();
+delete S.stmtToken; migrate(); migrateCats(); applyRecurring(); setSeg(S.ui.billSeg||'pay'); renderAll(); writeSnap(); syncPush(); fetchPrices();
 const qp=new URLSearchParams(location.search).get('tab'); if(qp){ history.replaceState(null,'',location.pathname); goTab(qp); }
 if('serviceWorker' in navigator && location.protocol.startsWith('http')){
   navigator.serviceWorker.register('sw.js').catch(()=>{});
