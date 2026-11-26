@@ -922,6 +922,13 @@ if('serviceWorker' in navigator && location.protocol.startsWith('http')){
   navigator.serviceWorker.register('sw.js').catch(()=>{});
   navigator.serviceWorker.addEventListener('message', e=>{ if(e.data==='bills') goTab('bills'); });
 }
+// ---------- otomatik güncelleme: yeni sürüm yayınlanınca uygulama kendini yeniler ----------
+if('serviceWorker' in navigator && location.protocol.startsWith('http')){
+  const hadCtl = !!navigator.serviceWorker.controller; let reloading = false;
+  navigator.serviceWorker.addEventListener('controllerchange', () => { if(hadCtl && !reloading){ reloading = true; location.reload(); } });
+  navigator.serviceWorker.getRegistration().then(reg => { if(!reg) return;
+    document.addEventListener('visibilitychange', () => { if(!document.hidden) reg.update().catch(()=>{}); }); });
+}
 })();
 </script>
 </body>
