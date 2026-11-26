@@ -511,7 +511,8 @@ function receivable(){ return S.bills.reduce((s,b)=> s + (b.kind==='alacak' && !
 const PT = {lend:['Borç verdim',1,'💸'], borrow:['Borç aldım',-1,'🤲'], payIn:['Ödeme aldım',-1,'📥'], payOut:['Ödeme yaptım',1,'📤']};
 const CUR = {
   TRY:{n:'₺ TL', u:'₺', sym:null, dec:2}, USD:{n:'$ Dolar', u:'$', sym:'USDTRY=X', dec:2}, EUR:{n:'€ Euro', u:'€', sym:'EURTRY=X', dec:2},
-  GRAM:{n:'🥇 Gram altın', u:'gr altın', sym:'GRAM', dec:3}, CEYREK:{n:'🪙 Çeyrek altın', u:'çeyrek', sym:'CEYREK', dec:2}
+  GRAM:{n:'🥇 Gram altın', u:'gr altın', sym:'GRAM', dec:3}, CEYREK:{n:'🪙 Çeyrek altın', u:'çeyrek', sym:'CEYREK', dec:2},
+  YARIM:{n:'🪙 Yarım altın', u:'yarım', sym:'YARIM', dec:2}, TAM:{n:'🪙 Tam altın', u:'tam altın', sym:'TAM', dec:2}, ATA:{n:'🏅 Ata altın', u:'ata altın', sym:'ATA', dec:2}
 };
 const curOf = e => CUR[e.cur] ? e.cur : 'TRY';
 const rate = c => c==='TRY' ? 1 : (S.prices[CUR[c].sym]?.p ?? null);
@@ -801,7 +802,7 @@ $('#addBill').onclick = () => billForm();
 
 // ---------- varlıklar ----------
 const AK = {gold:['🥇','Altın'], fx:['💵','Döviz'], stock:['📈','Hisse'], crypto:['🪙','Kripto'], fund:['🧺','Fon'], cash:['🏦','Nakit / mevduat']};
-const GOLD = [['GRAM','Gram altın'],['CEYREK','Çeyrek altın'],['YARIM','Yarım altın'],['TAM','Tam altın'],['GUMUS','Gram gümüş']];
+const GOLD = [['GRAM','Gram altın'],['CEYREK','Çeyrek altın'],['YARIM','Yarım altın'],['TAM','Tam altın'],['ATA','Ata altın'],['GUMUS','Gram gümüş']];
 const FX = [['USDTRY=X','Dolar'],['EURTRY=X','Euro'],['GBPTRY=X','Sterlin'],['CHFTRY=X','İsviçre frangı']];
 const unitPrice = a => a.kind==='cash' ? 1 : a.kind==='fund' ? (a.manual||a.cost||0) : (S.prices[a.sym]?.p ?? a.cost ?? 0);
 function assetTotals(){
