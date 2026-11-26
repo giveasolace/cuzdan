@@ -231,6 +231,7 @@ nav button.plus{flex:none;width:58px;height:58px;margin:-22px 6px 0;border-radiu
     <p class="sub" id="nStatus" style="margin-bottom:8px"></p>
     <div class="card" id="nRows"></div>
     <div class="btnrow" style="margin-top:10px"><button class="btn ghost" id="nOn">🔔 Bildirimleri aç</button><button class="btn ghost" id="nTest">Test gönder</button></div>
+    <div class="card pad" style="margin-top:10px"><b>🤝 Claude bağlantısı</b><p class="note">Ekstrelerini Claude'a verdiğinde harcamaları buraya kendisi ekler. Bu kodu Claude'a bir kere söyle, başkasıyla paylaşma.</p><div class="num" id="icode" style="font-size:20px;font-weight:800;letter-spacing:1px;text-align:center;margin:12px 0;user-select:all;-webkit-user-select:all"></div><div class="btnrow"><button class="btn ghost small" id="icopy">Kopyala</button><button class="btn ghost small" id="icheck">Şimdi kontrol et</button><button class="btn ghost small" id="inew">Yeni kod</button></div></div>
     <div class="btnrow" style="margin-top:10px"><button class="btn ghost" id="editCats">🏷️ Kategoriler</button></div>
     <div class="btnrow" style="margin-top:10px"><button class="btn ghost" id="exp">Dışa aktar</button><label class="btn ghost" style="text-align:center">İçe aktar<input type="file" id="imp" accept="application/json" hidden></label></div>
     <button class="btn danger" id="wipe" style="margin-top:6px">Tüm verileri sil</button>
@@ -528,6 +529,73 @@ function renderImpUndo(){
 }
 $('#stmtBtn').onclick = stmtSheet;
 
+
+// ---------- Claude gelen kutusu: ekstreleri Claude ekler (uçtan uca şifreli) ----------
+const ICODE_ABC='ABCDEFGHJKMNPQRSTUVWXYZ23456789';
+function newInboxCode(){ const b=crypto.getRandomValues(new Uint8Array(16)); let s=''; for(const x of b) s+=ICODE_ABC[x%ICODE_ABC.length]; return s.match(/.{4}/g).join('-'); }
+async function sha256(str){ return new Uint8Array(await crypto.subtle.digest('SHA-256', new TextEncoder().encode(str))); }
+const toHex = u => [...u].map(b=>b.toString(16).padStart(2,'0')).join('');
+async function inboxId(code){ return toHex(await sha256('cuzdan-inbox-id:'+code)).slice(0,24); }
+async function decryptInbox(code, data){
+  const key=await crypto.subtle.importKey('raw', await sha256('cuzdan-inbox-key:'+code), 'AES-GCM', false, ['decrypt']);
+  const [iv,ct]=data.split('.').map(s=>Uint8Array.from(atob(s), c=>c.charCodeAt(0)));
+  return JSON.parse(new TextDecoder().decode(await crypto.subtle.decrypt({name:'AES-GCM', iv}, key, ct)));
+}
+function autoImport(st, imp){
+  const card=String(st.card||'Kart').slice(0,40), valid=(t,c)=>S.cats[t].some(x=>x.id===c);
+  let added=0, skipped=0, sum=0; const months={};
+  for(const it of (Array.isArray(st.items)?st.items:[])){
+    if(!(it.amount>0) || !/^\d{4}-\d{2}-\d{2}$/.test(it.date)) continue;
+    const type=it.type==='in'?'in':'out', fb=type==='in'?'diger_in':'diger';
+    const cat=valid(type,it.cat)?it.cat:valid(type,fb)?fb:S.cats[type][0].id;
+    const dup=S.tx.some(t=>t.imp!==imp && (!t.src||t.src===card) && t.type===type && Math.abs(t.amount-it.amount)<0.01 && Math.abs(diffDays(t.date,it.date))<=1);
+    if(dup){ skipped++; continue; }
+    S.tx.push({id:uid(), type, amount:Math.round(it.amount*100)/100, cat, note:String(it.desc||'').slice(0,80)+(it.installment?' ('+it.installment+')':''), date:it.date, src:card, imp});
+    added++; sum+=type==='out'?it.amount:-it.amount; months[it.date.slice(0,7)]=(months[it.date.slice(0,7)]||0)+1;
+  }
+  if(added) (S.stmtCards ||= {})[card]=Date.now();
+  return {card, period:String(st.period||''), added, skipped, sum, months};
+}
+let inboxBusy=false;
+async function checkInbox(manual){
+  if(!S.inboxCode || inboxBusy) return; inboxBusy=true;
+  try{
+    const id=await inboxId(S.inboxCode);
+    const j=await (await fetch(PUSH_URL+'/inbox?id='+id)).json();
+    if(!j.items || !j.items.length){ if(manual) toast('Yeni ekstre yok'); return; }
+    const imp=uid(), report=[], acks=[];
+    for(const it of j.items){
+      acks.push(it.k);
+      try{ const p=await decryptInbox(S.inboxCode, it.data); for(const st of (Array.isArray(p.statements)?p.statements:[p])) report.push(autoImport(st, imp)); }
+      catch(e){} // çözülemeyen içerik (başka kod/bozuk) yok sayılır
+    }
+    fetch(PUSH_URL+'/inbox/ack',{method:'POST', headers:{'content-type':'application/json'}, body:JSON.stringify({id, keys:acks})}).catch(()=>{});
+    if(!report.length) return;
+    const n=report.reduce((a,r)=>a+r.added,0);
+    if(n){ S.lastImport={id:imp, at:Date.now(), n, card:report.map(r=>r.card).join(', ')};
+      const m={}; report.forEach(r=>Object.entries(r.months).forEach(([k,v])=>m[k]=(m[k]||0)+v)); curM=Object.entries(m).sort((a,b)=>b[1]-a[1])[0][0]; }
+    save(); renderAll(); buzz(); showInboxReport(report, n);
+  }catch(e){ if(manual) toast('Kontrol edilemedi (internet?)'); }
+  finally{ inboxBusy=false; }
+}
+function showInboxReport(rep, n){
+  openSheet('🧾 Claude ekstrelerini ekledi', `<p class="sub">${n?`${n} işlem şifreli olarak geldi ve eklendi.`:'Gelen ekstrelerdeki işlemler zaten kayıtlıymış.'}</p>
+    <div class="card">${rep.map(r=>`<div class="row"><div class="ic">💳</div><div class="t"><b>${esc(r.card)}</b><span>${esc(r.period)}${r.skipped?` · ${r.skipped} tekrar atlandı`:''}</span></div>
+      <div class="amt num">${r.added} işlem<small class="mut">${fmt(r.sum)}</small></div></div>`).join('')}</div>
+    <button class="btn" data-a="ok" style="margin-top:14px">İşlemlere bak</button>
+    ${n?'<button class="btn danger" data-a="undo">Hepsini geri al</button>':''}`, e=>{
+      const b=e.target.closest('button'); if(!b) return;
+      if(b.dataset.a==='ok'){ closeSheet(); goTab('tx'); }
+      if(b.dataset.a==='undo' && S.lastImport){ if(!confirm('Claude\'un eklediği bu işlemlerin hepsi silinsin mi?')) return; S.tx=S.tx.filter(t=>t.imp!==S.lastImport.id); delete S.lastImport; save(); closeSheet(); renderAll(); toast('Geri alındı'); }
+    });
+}
+function renderInbox(){
+  if(!S.inboxCode){ S.inboxCode=newInboxCode(); try{ localStorage.setItem(KEY, JSON.stringify(S)); }catch(e){} }
+  $('#icode').textContent=S.inboxCode;
+}
+$('#icopy').onclick = async () => { try{ await navigator.clipboard.writeText(S.inboxCode); toast('Kopyalandı'); }catch(e){ toast('Kopyalanamadı; kodu elle yaz'); } };
+$('#icheck').onclick = () => checkInbox(true);
+$('#inew').onclick = () => { if(!confirm('Yeni kod üretilsin mi? Eski kod artık çalışmaz; yeni kodu Claude\'a tekrar söylemen gerekir.')) return; S.inboxCode=newInboxCode(); save(); renderInbox(); toast('Yeni kod üretildi'); };
 
 // ---------- özet ----------
 function renderHome(){
@@ -1040,13 +1108,13 @@ $('#editCats').onclick = drawCats;
 
 // yedek
 $('#exp').onclick = async () => {
-  const data=JSON.stringify(S,null,1), name=`cuzdan-yedek-${today()}.json`, file=new File([data],name,{type:'application/json'});
+  const data=JSON.stringify({...S, inboxCode:undefined},null,1), name=`cuzdan-yedek-${today()}.json`, file=new File([data],name,{type:'application/json'});
   if(navigator.canShare && navigator.canShare({files:[file]})){ try{ await navigator.share({files:[file], title:'Cüzdan yedek'}); return; }catch(e){ if(e.name==='AbortError') return; } }
   const a=document.createElement('a'); a.href=URL.createObjectURL(file); a.download=name; a.click();
 };
 $('#imp').onchange = e => {
   const f=e.target.files[0]; if(!f) return; const r=new FileReader();
-  r.onload=()=>{ try{ const d=JSON.parse(r.result); if(!Array.isArray(d.tx)) throw 0; S=Object.assign(defaults(),d); delete S.stmtToken; save(); renderAll(); toast('Yedek yüklendi ✓'); }catch(_){ toast('Geçersiz yedek dosyası'); } };
+  r.onload=()=>{ try{ const d=JSON.parse(r.result); if(!Array.isArray(d.tx)) throw 0; const ic=S.inboxCode; S=Object.assign(defaults(),d); delete S.stmtToken; S.inboxCode=ic; save(); renderAll(); toast('Yedek yüklendi ✓'); }catch(_){ toast('Geçersiz yedek dosyası'); } };
   r.readAsText(f); e.target.value='';
 };
 $('#wipe').onclick = () => { if(confirm('Tüm işlemler, ödemeler, varlıklar silinecek. Emin misin?')){ S=defaults(); save(); renderAll(); toast('Sıfırlandı'); } };
@@ -1132,12 +1200,12 @@ document.addEventListener('click', e => { const b=e.target.closest('[data-mn]');
 
 function renderAll(){
   $$('.mTitle').forEach(x=>x.textContent=monthName(curM)+(curM===mkey()?'':''));
-  renderImpUndo();
+  renderImpUndo(); renderInbox();
   renderHome(); renderTx(); renderBills(); renderPeople(); renderNeeds(); renderAssets(); renderNotif();
 }
-document.addEventListener('visibilitychange', ()=>{ if(!document.hidden){ applyRecurring(); renderAll(); fetchPrices(); } });
+document.addEventListener('visibilitychange', ()=>{ if(!document.hidden){ applyRecurring(); renderAll(); fetchPrices(); checkInbox(); } });
 
-delete S.stmtToken; migrate(); migrateCats(); applyRecurring(); setSeg(S.ui.billSeg||'pay'); renderAll(); writeSnap(); syncPush(); fetchPrices();
+delete S.stmtToken; migrate(); migrateCats(); applyRecurring(); setSeg(S.ui.billSeg||'pay'); renderAll(); writeSnap(); syncPush(); fetchPrices(); checkInbox();
 const qp=new URLSearchParams(location.search).get('tab'); if(qp){ history.replaceState(null,'',location.pathname); goTab(qp); }
 if('serviceWorker' in navigator && location.protocol.startsWith('http')){
   navigator.serviceWorker.register('sw.js').catch(()=>{});
