@@ -433,39 +433,82 @@ function receivable(){ return S.bills.reduce((s,b)=> s + (b.kind==='alacak' && !
 
 // ---------- kişiler: borç / alacak ----------
 const PT = {lend:['Borç verdim',1,'💸'], borrow:['Borç aldım',-1,'🤲'], payIn:['Ödeme aldım',-1,'📥'], payOut:['Ödeme yaptım',1,'📤']};
-const bal = p => Math.round(p.entries.reduce((s,e)=>s+PT[e.t][1]*e.amount,0)*100)/100;
-const open = p => Math.abs(bal(p))>0.004;
-const balText = b => b>0.004 ? `sana ${fmt(b)} borçlu` : b<-0.004 ? `ona ${fmt(-b)} borçlusun` : 'hesap kapandı';
+const CUR = {
+  TRY:{n:'₺ TL', u:'₺', sym:null, dec:2}, USD:{n:'$ Dolar', u:'$', sym:'USDTRY=X', dec:2}, EUR:{n:'€ Euro', u:'€', sym:'EURTRY=X', dec:2},
+  GRAM:{n:'🥇 Gram altın', u:'gr altın', sym:'GRAM', dec:3}, CEYREK:{n:'🪙 Çeyrek altın', u:'çeyrek', sym:'CEYREK', dec:2}
+};
+const curOf = e => CUR[e.cur] ? e.cur : 'TRY';
+const rate = c => c==='TRY' ? 1 : (S.prices[CUR[c].sym]?.p ?? null);
+function fmtCur(n, c){
+  if(c==='TRY') return fmt(n);
+  const v=Math.abs(n).toLocaleString('tr-TR',{maximumFractionDigits:CUR[c].dec}), s=n<0?'−':'';
+  return (c==='USD'||c==='EUR') ? s+CUR[c].u+v : s+v+' '+CUR[c].u;
+}
+function balances(p){
+  const m={}; for(const e of p.entries){ const c=curOf(e); m[c]=(m[c]||0)+PT[e.t][1]*e.amount; }
+  for(const c in m){ m[c]=Math.round(m[c]*10000)/10000; if(Math.abs(m[c])<0.0005) delete m[c]; }
+  return m;
+}
+function balTL(p){ let s=0; for(const [c,v] of Object.entries(balances(p))){ const r=rate(c); if(r!=null) s+=v*r; } return Math.round(s*100)/100; }
+const bal = balTL;                                   // toplamlar (Özet, kartlar, hatırlatma) TL karşılığıyla çalışır
+const open = p => Object.keys(balances(p)).length>0;
+const hasFx = p => Object.keys(balances(p)).some(c=>c!=='TRY');
+const missingRate = p => Object.keys(balances(p)).some(c=>rate(c)==null);
+function balText(p){
+  const m=Object.entries(balances(p));
+  const pos=m.filter(([,v])=>v>0).map(([c,v])=>fmtCur(v,c)), neg=m.filter(([,v])=>v<0).map(([c,v])=>fmtCur(-v,c));
+  const parts=[]; if(pos.length) parts.push(`sana ${pos.join(' + ')} borçlu`); if(neg.length) parts.push(`ona ${neg.join(' + ')} borçlusun`);
+  return parts.join(' · ') || 'hesap kapandı';
+}
+const curLabel = p => Object.keys(balances(p)).filter(c=>c!=='TRY').map(c=>fmtCur(Math.abs(balances(p)[c]),c)).join(' + ');
+function mainCur(p){
+  const m=balances(p), k=Object.keys(m);
+  if(k.length) return k.sort((a,b)=>Math.abs(m[b]*(rate(b)||1))-Math.abs(m[a]*(rate(a)||1)))[0];
+  return p.entries.length ? curOf(p.entries[p.entries.length-1]) : 'TRY';
+}
+const curChips = (sel, attr) => `<div class="chips wrap">${Object.entries(CUR).map(([k,v])=>`<button type="button" data-${attr}="${k}" class="${sel===k?'on':''}">${v.n}</button>`).join('')}</div>`;
+function convLine(amt, c){
+  if(c==='TRY') return '';
+  const r=rate(c); if(r==null) return 'Güncel kur alınıyor…';
+  return (amt>0 ? `≈ ${fmt(amt*r)} · ` : '') + `1 ${CUR[c].u} = ${fmt(r)} (güncel kur)`;
+}
+function ensureRate(c, cb){ if(c!=='TRY' && rate(c)==null) fetchPrices(true, true, [CUR[c].sym]).then(cb); }
 function migrate(){
   if(S.migrated) return;
   for(const b of S.bills.filter(isOnce)){
     if(b.paid.once || !(b.amount>0)) continue;
     let p=S.people.find(x=>x.name.toLocaleLowerCase('tr')===b.name.toLocaleLowerCase('tr'));
     if(!p){ p={id:uid(), name:b.name, entries:[]}; S.people.push(p); }
-    p.entries.push({id:uid(), t:b.kind==='alacak'?'lend':'borrow', amount:b.amount, date:b.date, note:'Önceki kayıttan'}); p.due=b.date;
+    p.entries.push({id:uid(), t:b.kind==='alacak'?'lend':'borrow', amount:b.amount, cur:'TRY', date:b.date, note:'Önceki kayıttan'}); p.due=b.date;
   }
   S.bills=S.bills.filter(b=>!isOnce(b)); S.migrated=true; save();
 }
 function renderPeople(){
   const owe=S.people.reduce((s,p)=>{const b=bal(p);return s+(b<0?-b:0);},0), get=S.people.reduce((s,p)=>{const b=bal(p);return s+(b>0?b:0);},0);
-  $('#pplKpis').innerHTML = `<div class="kpi"><span>Borçlarım</span><b class="num ${owe?'neg':''}">${fmt(owe)}</b></div><div class="kpi"><span>Alacaklarım</span><b class="num ${get?'pos':''}">${fmt(get)}</b></div>`;
+  const fx=S.people.some(p=>open(p)&&hasFx(p));
+  $('#pplKpis').innerHTML = `<div class="kpi"><span>Borçlarım${fx?' · güncel kurla':''}</span><b class="num ${owe?'neg':''}">${fmt(owe)}</b></div><div class="kpi"><span>Alacaklarım${fx?' · güncel kurla':''}</span><b class="num ${get?'pos':''}">${fmt(get)}</b></div>`;
   const list=[...S.people].sort((a,b)=>(open(b)-open(a))||Math.abs(bal(b))-Math.abs(bal(a)));
   $('#pplList').innerHTML = list.length ? `<div class="card" style="margin-top:14px">${list.map(p=>{
-    const b=bal(p), o=open(p), late=o && p.due && p.due<today();
-    return `<div class="row tap ${late?'late':''}" data-person="${p.id}" style="${o?'':'opacity:.5'}"><div class="ic">${b>0.004?'🟢':b<-0.004?'🔴':'✅'}</div>
-      <div class="t"><b>${esc(p.name)}</b><span>${balText(b)}${o&&p.due?` · ${late?dueLabel(p.due):'vade '+shortDate(p.due)}`:''}</span></div>
-      <div class="amt num ${b>0.004?'pos':b<-0.004?'neg':'mut'}">${o?fmt(Math.abs(b)):'—'}</div></div>`; }).join('')}</div>`
-    : `<div class="card" style="margin-top:14px"><div class="empty">Kime borcun var, kimden alacağın var?<br>Kişiyi ekle; verdikçe, aldıkça, ödedikçe yaz — bakiyeyi ben tutayım.</div></div>`;
+    const b=bal(p), o=open(p), late=o && p.due && p.due<today(), m=balances(p);
+    const sign = Object.values(m).reduce((s,v)=>s+Math.sign(v),0) || Math.sign(b);
+    const amt = !o ? '—' : missingRate(p) && !b ? 'kur yok' : (hasFx(p)?'≈ ':'')+fmt(Math.abs(b));
+    return `<div class="row tap ${late?'late':''}" data-person="${p.id}" style="${o?'':'opacity:.5'}"><div class="ic">${!o?'✅':sign>0?'🟢':'🔴'}</div>
+      <div class="t"><b>${esc(p.name)}</b><span>${balText(p)}${o&&p.due?` · ${late?dueLabel(p.due):'vade '+shortDate(p.due)}`:''}</span></div>
+      <div class="amt num ${!o?'mut':b>0?'pos':'neg'}">${amt}</div></div>`; }).join('')}</div>`
+    : `<div class="card" style="margin-top:14px"><div class="empty">Kime borcun var, kimden alacağın var?<br>TL, dolar, euro ya da altın olarak yaz; güncel kurla TL karşılığını ben hesaplayayım.</div></div>`;
 }
 function personSheet(p){
-  const b=bal(p);
+  const m=Object.entries(balances(p)), b=bal(p);
+  const big = m.length ? m.map(([c,v])=>`<div class="num ${v>0?'pos':'neg'}" style="font-size:30px;font-weight:800">${fmtCur(Math.abs(v),c)}</div>`).join('') : `<div class="num" style="font-size:30px;font-weight:800">${fmt(0)}</div>`;
   openSheet(esc(p.name), `
-    <div style="text-align:center;margin:4px 0 14px"><div class="num" style="font-size:32px;font-weight:800" class="${b>0?'pos':b<0?'neg':''}"><span class="${b>0.004?'pos':b<-0.004?'neg':''}">${fmt(Math.abs(b))}</span></div><div class="mut" style="font-weight:600">${balText(b)}</div></div>
+    <div style="text-align:center;margin:4px 0 14px">${big}<div class="mut" style="font-weight:600;margin-top:4px">${balText(p)}</div>
+      ${hasFx(p)?`<div class="note" style="margin-top:4px">${missingRate(p)?'Güncel kur alınamadı':'≈ '+fmt(Math.abs(b))+' (güncel kurla)'}</div>`:''}</div>
     <div class="catgrid" style="grid-template-columns:repeat(2,1fr);margin-top:0">${Object.entries(PT).map(([k,[n,,em]])=>`<button data-pt="${k}"><div>${em}</div>${n}</button>`).join('')}</div>
     <div class="f2" style="align-items:flex-end"><label class="f"><span>Vade (isteğe bağlı)</span><input type="date" id="pDue" value="${p.due||''}"></label><button class="btn ghost small" data-a="due" style="margin-bottom:12px;height:46px">Kaydet</button></div>
     <h2>Hareketler</h2>
-    <div class="card">${p.entries.length ? [...p.entries].sort((a,c)=>c.date.localeCompare(a.date)).map(e=>`<div class="row"><div class="ic">${PT[e.t][2]}</div><div class="t"><b>${PT[e.t][0]}</b><span>${shortDate(e.date)}${e.note?' · '+esc(e.note):''}</span></div>
-      <div class="amt num ${PT[e.t][1]>0?'':'mut'}">${fmt(e.amount)}</div><button class="x" data-edel="${e.id}" style="color:var(--muted);font-size:20px;padding:2px 6px">×</button></div>`).join('') : '<div class="empty">Henüz hareket yok.</div>'}</div>
+    <div class="card">${p.entries.length ? [...p.entries].sort((a,c)=>c.date.localeCompare(a.date)).map(e=>{ const c=curOf(e), r=rate(c);
+      return `<div class="row"><div class="ic">${PT[e.t][2]}</div><div class="t"><b>${PT[e.t][0]}</b><span>${shortDate(e.date)}${e.note?' · '+esc(e.note):''}${c!=='TRY'&&r!=null?' · şimdi ≈ '+fmt(e.amount*r):''}</span></div>
+      <div class="amt num ${PT[e.t][1]>0?'':'mut'}">${fmtCur(e.amount,c)}</div><button class="x" data-edel="${e.id}" style="color:var(--muted);font-size:20px;padding:2px 6px">×</button></div>`; }).join('') : '<div class="empty">Henüz hareket yok.</div>'}</div>
     <button class="btn danger" data-a="pdel" style="margin-top:8px">Kişiyi sil</button>`, e => {
       const bt=e.target.closest('button'); if(!bt) return;
       if(bt.dataset.pt) return entryForm(p, bt.dataset.pt);
@@ -475,33 +518,45 @@ function personSheet(p){
     });
 }
 function entryForm(p, t){
-  openSheet(`${PT[t][2]} ${PT[t][0]}`, `<p class="sub">${esc(p.name)}${open(p)?' · şu an '+balText(bal(p)):''}</p>
-    <input class="amtin num" id="eAmt" inputmode="decimal" placeholder="0 ₺">
+  let c = mainCur(p);
+  openSheet(`${PT[t][2]} ${PT[t][0]}`, `<p class="sub">${esc(p.name)}${open(p)?' · şu an '+balText(p):''}</p>
+    ${curChips(c,'ec')}
+    <input class="amtin num" id="eAmt" inputmode="decimal" placeholder="0">
+    <p class="note" id="eConv" style="text-align:center;margin:0 0 12px"></p>
     <div class="f2"><label class="f"><span>Tarih</span><input type="date" id="eDate" value="${today()}"></label><label class="f"><span>Not</span><input id="eNote" placeholder="İsteğe bağlı" autocomplete="off"></label></div>
     <button class="btn" data-a="ok">Kaydet</button>`, e => {
+      const ch=e.target.closest('[data-ec]');
+      if(ch){ c=ch.dataset.ec; $$('#shBody [data-ec]').forEach(x=>x.classList.toggle('on',x===ch)); upd(); ensureRate(c, upd); return; }
       if(!e.target.closest('[data-a=ok]')) return;
-      const amt=parseAmt($('#eAmt').value); if(!(amt>0)) return toast('Tutarı yaz');
-      p.entries.push({id:uid(), t, amount:Math.round(amt*100)/100, date:$('#eDate').value||today(), note:$('#eNote').value.trim()});
+      const amt=parseAmt($('#eAmt').value); if(!(amt>0)) return toast('Miktarı yaz');
+      p.entries.push({id:uid(), t, amount:Math.round(amt*10000)/10000, cur:c, date:$('#eDate').value||today(), note:$('#eNote').value.trim()});
       if(!open(p)) delete p.due;
-      save(); renderAll(); buzz(); toast(open(p) ? `${p.name}: ${balText(bal(p))}` : `✅ ${p.name} ile hesap kapandı`); personSheet(p);
+      save(); renderAll(); buzz(); toast(open(p) ? `${p.name}: ${balText(p)}` : `✅ ${p.name} ile hesap kapandı`); personSheet(p);
     });
+  const upd = () => { const el=$('#eConv'); if(el) el.textContent=convLine(parseAmt($('#eAmt').value), c); };
+  $('#eAmt').oninput = upd; upd(); ensureRate(c, upd);
   setTimeout(()=>$('#eAmt')?.focus(),300);
 }
-let npFirst='lend';
+let npFirst='lend', npCur='TRY';
 function addPersonSheet(){
   openSheet('Yeni kişi', `<label class="f"><span>İsim</span><input id="npName" placeholder="Örn: Ahmet" autocomplete="off"></label>
     <div class="seg"><button data-np="lend" class="${npFirst==='lend'?'on':''}">Ben borç verdim</button><button data-np="borrow" class="${npFirst==='borrow'?'on':''}">Ben borç aldım</button></div>
-    <div class="f2"><label class="f"><span>Tutar (boş da olabilir)</span><input id="npAmt" inputmode="decimal" placeholder="0 ₺"></label><label class="f"><span>Vade (isteğe bağlı)</span><input type="date" id="npDue"></label></div>
+    ${curChips(npCur,'npc')}
+    <div class="f2"><label class="f"><span>Miktar (boş da olabilir)</span><input id="npAmt" inputmode="decimal" placeholder="0"></label><label class="f"><span>Vade (isteğe bağlı)</span><input type="date" id="npDue"></label></div>
+    <p class="note" id="npConv" style="margin:-4px 2px 12px"></p>
     <label class="f"><span>Not</span><input id="npNote" placeholder="Örn: Araba tamiri için" autocomplete="off"></label>
     <button class="btn" data-a="ok">Kaydet</button>`, e => {
       const b=e.target.closest('button'); if(!b) return;
       if(b.dataset.np){ npFirst=b.dataset.np; $$('#shBody [data-np]').forEach(x=>x.classList.toggle('on',x===b)); return; }
+      if(b.dataset.npc){ npCur=b.dataset.npc; $$('#shBody [data-npc]').forEach(x=>x.classList.toggle('on',x===b)); upd(); ensureRate(npCur, upd); return; }
       if(b.dataset.a!=='ok') return;
       const name=$('#npName').value.trim(); if(!name) return toast('İsim yaz');
       const p={id:uid(), name, entries:[]}; const amt=parseAmt($('#npAmt').value);
-      if(amt>0){ p.entries.push({id:uid(), t:npFirst, amount:Math.round(amt*100)/100, date:today(), note:$('#npNote').value.trim()}); if($('#npDue').value) p.due=$('#npDue').value; }
-      S.people.push(p); save(); closeSheet(); renderAll(); toast(amt>0?`${name}: ${balText(bal(p))}`:'Kişi eklendi');
+      if(amt>0){ p.entries.push({id:uid(), t:npFirst, amount:Math.round(amt*10000)/10000, cur:npCur, date:today(), note:$('#npNote').value.trim()}); if($('#npDue').value) p.due=$('#npDue').value; }
+      S.people.push(p); save(); closeSheet(); renderAll(); toast(amt>0?`${name}: ${balText(p)}`:'Kişi eklendi');
     });
+  const upd = () => { const el=$('#npConv'); if(el) el.textContent=convLine(parseAmt($('#npAmt').value), npCur); };
+  $('#npAmt').oninput = upd; upd(); ensureRate(npCur, upd);
   setTimeout(()=>$('#npName')?.focus(),300);
 }
 $('#addPerson').onclick = addPersonSheet;
@@ -574,6 +629,7 @@ function setSeg(s){
   $$('#billSeg button').forEach(b=>b.classList.toggle('on', b.dataset.seg===s));
   $('#segPay').hidden = s!=='pay'; $('#segPeople').hidden = s!=='people'; $('#segNeeds').hidden = s!=='needs';
   $('#billH').textContent = {pay:'Ödemeler', people:'Borç / Alacak', needs:'İhtiyaç listesi'}[s];
+  if(s==='people') fetchPrices();
 }
 $('#billSeg').onclick = e => { const b=e.target.closest('[data-seg]'); if(b){ setSeg(b.dataset.seg); try{ localStorage.setItem(KEY, JSON.stringify(S)); }catch(_){} } };
 function dueLabel(d){ const n=diffDays(today(), d); return n<0 ? `${-n} gün gecikti` : n===0 ? 'Bugün' : n===1 ? 'Yarın' : `${n} gün sonra`; }
@@ -678,15 +734,16 @@ function assetTotals(){
     const ch=S.prices[a.sym]?.chg; if(ch!=null && a.kind!=='cash' && a.kind!=='fund'){ day+=v-v/(1+ch/100); dayBase+=v/(1+ch/100); } }
   return {value, pnl:value-cost, pct:cost?(value/cost-1)*100:0, day, dayPct: dayBase?day/dayBase*100:null};
 }
-async function fetchPrices(force){
-  const syms=[...new Set(S.assets.filter(a=>a.sym && a.kind!=='fund' && a.kind!=='cash').map(a=>a.sym))];
+async function fetchPrices(force, silent, extra){
+  const syms=[...new Set([...S.assets.filter(a=>a.sym && a.kind!=='fund' && a.kind!=='cash').map(a=>a.sym),
+    ...S.people.flatMap(p=>p.entries.map(curOf)).filter(c=>c!=='TRY').map(c=>CUR[c].sym), ...(extra||[])])];
   if(!syms.length) return;
   if(!force && Date.now()-S.pricesAt<10*60*1000) return;
   try{
     const r=await fetch(PUSH_URL+'/prices?s='+encodeURIComponent(syms.join(','))); const j=await r.json();
     for(const [k,v] of Object.entries(j.prices||{})) if(v && v.p) S.prices[k]={p:v.p, chg:v.chg, at:j.at};
-    S.pricesAt=Date.now(); save(); renderAll(); if(force) toast('Fiyatlar güncellendi');
-  }catch(e){ if(force) toast('Fiyatlar alınamadı (internet?)'); }
+    S.pricesAt=Date.now(); save(); renderAll(); if(force && !silent) toast('Fiyatlar güncellendi');
+  }catch(e){ if(force && !silent) toast('Fiyatlar alınamadı (internet?)'); }
 }
 function renderAssets(){
   const t=assetTotals();
@@ -893,7 +950,7 @@ async function writeSnap(){
   try{
     const t=today(), until=addDays(t,10), items=[];
     for(const b of S.bills) for(const o of occUntil(b,until)) items.push({name:b.name, amount:b.amount, date:o.date, inc:b.kind==='alacak'});
-    for(const p of S.people) if(p.due && open(p) && p.due<=until){ const b=bal(p); items.push({name:(b<0?'Borç: ':'Alacak: ')+p.name, amount:Math.abs(b), date:p.due, inc:b>0}); }
+    for(const p of S.people) if(p.due && open(p) && p.due<=until){ const b=bal(p); items.push({name:(b<0?'Borç: ':'Alacak: ')+p.name+(hasFx(p)?' ('+curLabel(p)+')':''), amount:Math.abs(b), date:p.due, inc:b>0}); }
     items.sort((a,b)=>a.date.localeCompare(b.date));
     const snap={date:t, items:items.slice(0,12), testAt:S.testAt||0};
     const db=await idb(); await new Promise((res,rej)=>{ const tx=db.transaction('kv','readwrite'); tx.objectStore('kv').put(snap,'snap'); tx.oncomplete=res; tx.onerror=()=>rej(tx.error); }); db.close();
