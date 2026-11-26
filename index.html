@@ -395,7 +395,7 @@ function nextRecDate(r){
 function applyRecurring(){
   const t=today(), cur=mkey(), made=[];
   for(const r of S.recurring){
-    if(!r.on) continue;
+    if(!r.on || r.sure===false) continue;
     for(let m=r.start; m<=cur; m=addMonths(m,1)){
       const d=dueOf(m,r.day); if(d>t || r.posted[m]) continue;
       const tx={id:uid(), type:'in', amount:r.amount, cat:r.cat, note:r.name, date:d, rec:r.id};
@@ -407,13 +407,14 @@ function applyRecurring(){
   return made.length;
 }
 function recForm(r, pre){
-  const f = r ? {...r} : {name:'', amount:0, cat:'maas', day:new Date().getDate(), on:true, ...(pre||{})};
+  const f = r ? {...r} : {name:'', amount:0, cat:'maas', day:new Date().getDate(), on:true, sure:true, ...(pre||{})};
   const nowTxt = d => ` Bu ayınkini (${shortDate(dueOf(mkey(),d))}) de şimdi ekle`;
   const read = () => { f.name=$('#rName').value.trim(); f.amount=parseAmt($('#rAmt').value); f.day=+$('#rDay').value; };
   const click = e => {
     const b=e.target.closest('button'); if(!b) return;
     if(b.dataset.rcat){ f.cat=b.dataset.rcat; $$('#shBody [data-rcat]').forEach(x=>x.classList.toggle('on',x===b)); if(!$('#rName').value.trim()) $('#rName').value=catOf('in',f.cat).name; return; }
     if(b.dataset.a==='ron'){ f.on=!f.on; b.classList.toggle('on',f.on); return; }
+    if(b.dataset.a==='sure'){ f.sure = f.sure===false; b.classList.toggle('on', f.sure!==false); $('#rSureNote').textContent = sureNote(f.sure); const w=$('#rNowWrap'); if(w && f.sure===false) w.style.display='none'; return; }
     if(b.dataset.a==='del'){ if(!confirm(`"${r.name}" düzenli geliri silinsin mi? (Geçmiş kayıtlar silinmez)`)) return;
       S.recurring=S.recurring.filter(x=>x.id!==r.id); save(); closeSheet(); renderAll(); return toast('Silindi'); }
     if(b.dataset.a!=='save') return;
@@ -422,11 +423,11 @@ function recForm(r, pre){
     const t=today(), thisDue=dueOf(mkey(),f.day), amount=Math.round(f.amount*100)/100;
     if(r){
       const x=S.recurring.find(y=>y.id===r.id), wasOff=!x.on;
-      Object.assign(x,{name:f.name, amount, cat:f.cat, day:f.day, on:f.on});
+      Object.assign(x,{name:f.name, amount, cat:f.cat, day:f.day, on:f.on, sure:f.sure!==false});
       if(wasOff && x.on){ const s0 = thisDue>=t ? mkey() : addMonths(mkey(),1); if(x.start<s0) x.start=s0; } // tekrar açılınca geçmiş ayları doldurma
     } else {
       const now = $('#rNow') && $('#rNow').checked;
-      S.recurring.push({id:uid(), name:f.name, amount, cat:f.cat, day:f.day, start:(thisDue>=t || now) ? mkey() : addMonths(mkey(),1), posted:{}, on:true});
+      S.recurring.push({id:uid(), name:f.name, amount, cat:f.cat, day:f.day, start:(f.sure===false || thisDue>=t || now) ? mkey() : addMonths(mkey(),1), posted:{}, on:true, sure:f.sure!==false});
     }
     save(); closeSheet(); const n=applyRecurring(); renderAll(); if(!n) toast('🔁 Düzenli gelir kaydedildi');
   };
@@ -436,22 +437,54 @@ function recForm(r, pre){
     <div class="f2"><label class="f"><span>Tutar</span><input id="rAmt" inputmode="decimal" value="${amtStr(f.amount)}" placeholder="0 ₺"></label>
     <label class="f"><span>Her ayın</span><select id="rDay">${Array.from({length:31},(_,i)=>`<option value="${i+1}" ${f.day===i+1?'selected':''}>${i+1}. günü</option>`).join('')}</select></label></div>
     <div class="catgrid" style="margin-top:0">${S.cats.in.map(c=>`<button data-rcat="${c.id}" class="${f.cat===c.id?'on':''}"><div>${c.emoji}</div>${esc(c.name)}</button>`).join('')}</div>
+    <div class="card" style="margin-bottom:6px"><div class="nrow"><span>🔁 Her ay kesin gelir (otomatik yaz)</span><button class="tgl ${f.sure!==false?'on':''}" data-a="sure" aria-label="Kesin gelir"></button></div></div>
+    <p class="note" id="rSureNote" style="margin:0 2px 10px">${sureNote(f.sure)}</p>
     ${r?'':`<label class="chk" id="rNowWrap" style="${past?'':'display:none'}"><input type="checkbox" id="rNow"><span>${nowTxt(f.day)}</span></label>`}
     ${r?`<div class="card" style="margin-bottom:12px"><div class="nrow"><span>Aktif</span><button class="tgl ${f.on?'on':''}" data-a="ron" aria-label="Aktif"></button></div></div>`:''}
     <p class="note">${r?'Tutar değişikliği sonraki aylardan itibaren geçerli olur; geçmiş kayıtlar aynen kalır.':'O gün gelince gelir kaydını ben açarım. Bir ay tutar farklı gelirse İşlemler\'den o kaydı düzeltirsin.'}</p>
     <button class="btn" data-a="save" style="margin-top:10px">Kaydet</button>${r?'<button class="btn danger" data-a="del">Sil</button>':''}`, click);
   if(!r) $('#rDay').onchange = () => { const d=+$('#rDay').value; $('#rNowWrap').style.display = d<new Date().getDate() ? '' : 'none'; $('#rNowWrap span').textContent=nowTxt(d); };
 }
+const sureNote = v => v===false ? 'Her ay gelmeyebilir: günü gelince sana "geldi mi?" diye sorarım, sen onaylarsın.' : 'Maaş, kira gibi: günü gelince kendiliğinden gelir olarak yazılır.';
+function pendingIncome(){
+  const t=today(), from=addMonths(mkey(),-1), out=[];
+  for(const r of S.recurring){ if(!r.on || r.sure!==false) continue;
+    for(let m=(r.start>from?r.start:from); m<=mkey(); m=addMonths(m,1)){ const d=dueOf(m,r.day); if(d>t || r.posted[m] || (r.skip||{})[m]) continue; out.push({r,m,d}); } }
+  return out;
+}
+function expectedIncome(){
+  const t=today(), m=mkey();
+  return S.recurring.filter(r=>r.on && r.sure!==false && r.start<=m && !r.posted[m] && dueOf(m,r.day)>t).reduce((a,r)=>a+r.amount,0);
+}
 function renderRec(){
-  const rs=S.recurring;
-  $('#recBox').innerHTML = rs.length
-    ? rs.map(r=>{ const c=catOf('in',r.cat); return `<div class="row tap" data-rec="${r.id}" style="${r.on?'':'opacity:.5'}"><div class="ic">${c.emoji}</div>
-        <div class="t"><b>${esc(r.name)}</b><span>her ayın ${r.day}. günü · ${r.on?'sonraki '+shortDate(nextRecDate(r)):'kapalı'}</span></div><div class="amt num pos">+${fmt(r.amount)}</div></div>`; }).join('')
-      + `<div class="nrow"><span class="mut" style="font-size:13px">Aylık toplam</span><b class="num pos">+${fmt(rs.filter(r=>r.on).reduce((s,r)=>s+r.amount,0))}</b></div>`
-    : '<div class="empty">Maaş, kira gibi her ay gelen gelirlerini ekle;<br>günü gelince kaydı ben açayım.</div>';
+  const rs=S.recurring, pend=pendingIncome();
+  const sureSum=rs.filter(r=>r.on && r.sure!==false).reduce((s,r)=>s+r.amount,0), varSum=rs.filter(r=>r.on && r.sure===false).reduce((s,r)=>s+r.amount,0);
+  $('#recBox').innerHTML = (pend.map(({r,m,d})=>{ const c=catOf('in',r.cat); return `<div class="row" data-pin="${r.id}|${m}" style="background:var(--soft)"><div class="ic">💰</div>
+      <div class="t"><b>${esc(r.name)}</b><span>${shortDate(d)} · geldi mi?</span></div><button class="pill" data-a="came">Geldi</button><button class="pill bad" data-a="no">Gelmedi</button></div>`; }).join(''))
+    + (rs.length
+    ? rs.map(r=>{ const c=catOf('in',r.cat), sure=r.sure!==false; return `<div class="row tap" data-rec="${r.id}" style="${r.on?'':'opacity:.5'}"><div class="ic">${c.emoji}</div>
+        <div class="t"><b>${esc(r.name)}</b><span>her ayın ${r.day}. günü · ${!r.on?'kapalı':sure?'sonraki '+shortDate(nextRecDate(r)):'gelince sorulur'}</span></div><div class="amt num ${sure?'pos':'mut'}">${sure?'+':'~'}${fmt(r.amount)}</div></div>`; }).join('')
+      + `<div class="nrow"><span class="mut" style="font-size:13px">Aylık kesin gelir${varSum?` <span style="font-weight:600">+ değişken ~${fmt(varSum)}</span>`:''}</span><b class="num pos">+${fmt(sureSum)}</b></div>`
+    : '<div class="empty">Maaş, kira gibi her ay gelen gelirlerini ekle;<br>günü gelince kaydı ben açayım.</div>');
+}
+function confirmIncome(r, m, d){
+  openSheet(`💰 ${esc(r.name)}`, `<p class="sub">${shortDate(d)} için ne kadar geldi?</p>
+    <input class="amtin num pos" id="ciAmt" inputmode="decimal" value="${amtStr(r.amount)}" placeholder="0 ₺">
+    <button class="btn" data-a="ok">Gelir olarak kaydet</button>`, e => {
+      if(!e.target.closest('[data-a=ok]')) return;
+      const amt=parseAmt($('#ciAmt').value); if(!(amt>0)) return toast('Tutarı yaz');
+      const tx={id:uid(), type:'in', amount:Math.round(amt*100)/100, cat:r.cat, note:r.name, date:d<=today()?d:today(), rec:r.id};
+      S.tx.push(tx); r.posted[m]=tx.id; save(); closeSheet(); renderAll(); buzz(); toast(`💰 ${r.name}: ${fmt(tx.amount,true)}`);
+    });
+  setTimeout(()=>$('#ciAmt')?.select(),300);
 }
 $('#addRec').onclick = () => recForm();
-$('#recBox').onclick = e => { const r=e.target.closest('[data-rec]'); if(r) recForm(S.recurring.find(x=>x.id===r.dataset.rec)); };
+$('#recBox').onclick = e => {
+  const pin=e.target.closest('[data-pin]');
+  if(pin){ const b=e.target.closest('[data-a]'); if(!b) return; const [id,m]=pin.dataset.pin.split('|'), r=S.recurring.find(x=>x.id===id); if(!r) return;
+    if(b.dataset.a==='came') return confirmIncome(r, m, dueOf(m, r.day));
+    if(b.dataset.a==='no'){ (r.skip ||= {})[m]=true; save(); renderAll(); return toast(`Tamam, ${r.name} bu ay gelmedi olarak işaretlendi`); } return; }
+  const r=e.target.closest('[data-rec]'); if(r) recForm(S.recurring.find(x=>x.id===r.dataset.rec)); };
 
 // ---------- ekstre dosyası içe aktarma (Claude'un hazırladığı JSON) ----------
 const stmtCards = () => { const mine=S.bills.filter(b=>b.kind==='kart').map(b=>b.name), low=mine.map(n=>n.toLocaleLowerCase('tr'));
@@ -633,8 +666,8 @@ function renderHome(){
   renderRec();
   const s=sums(curM);
   $('#hLeft').textContent=fmt(s.i-s.o); $('#hIn').textContent=fmt(s.i); $('#hOut').textContent=fmt(s.o);
-  const pend = curM===mkey() ? pendingThisMonth() : 0;
-  $('#hPend').innerHTML = pend ? `Bu ay daha ödenecek: <b>${fmt(pend)}</b> · Ay sonu tahmini kalan: <b>${fmt(s.i-s.o-pend)}</b>` : '';
+  const pend = curM===mkey() ? pendingThisMonth() : 0, inc = curM===mkey() ? expectedIncome() : 0;
+  $('#hPend').innerHTML = (pend||inc) ? [pend?`Bu ay daha ödenecek: <b>${fmt(pend)}</b>`:'', inc?`gelecek gelir: <b>${fmt(inc)}</b>`:'', `Ay sonu tahmini kalan: <b>${fmt(s.i-s.o-pend+inc)}</b>`].filter(Boolean).join(' · ') : '';
   // bütçe
   const rows=[];
   const bar=(name,spent,lim)=>{ const r=spent/lim; return `<div class="brow"><div class="bh"><b>${name}</b><span class="num">${fmt(spent)} / ${fmt(lim)}</span></div><div class="bar ${r>=1?'over':r>=.8?'warn':''}"><i style="width:${Math.min(100,r*100)}%"></i></div></div>`; };
@@ -1245,7 +1278,7 @@ function renderAll(){
 }
 document.addEventListener('visibilitychange', ()=>{ if(!document.hidden){ applyRecurring(); applyBills(); renderAll(); fetchPrices(); checkInbox(); } });
 
-delete S.stmtToken; migrate(); migrateCats(); migrateBillsAuto(); applyRecurring(); applyBills(); setSeg(S.ui.billSeg||'pay'); renderAll(); writeSnap(); syncPush(); fetchPrices(); checkInbox();
+delete S.stmtToken; migrate(); migrateCats(); migrateBillsAuto(); applyRecurring(); applyBills(); { const pi=pendingIncome().length; if(pi) setTimeout(()=>toast(`💰 ${pi} gelir onay bekliyor (Özet)`),1800); } setSeg(S.ui.billSeg||'pay'); renderAll(); writeSnap(); syncPush(); fetchPrices(); checkInbox();
 const qp=new URLSearchParams(location.search).get('tab'); if(qp){ history.replaceState(null,'',location.pathname); goTab(qp); }
 if('serviceWorker' in navigator && location.protocol.startsWith('http')){
   navigator.serviceWorker.register('sw.js').catch(()=>{});
