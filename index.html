@@ -168,6 +168,7 @@ nav button.plus{flex:none;width:58px;height:58px;margin:-22px 6px 0;border-radiu
       <div class="lbl">Bu ay kalan</div>
       <div class="big num" id="hLeft">0 ₺</div>
       <div class="two"><div><span>Gelir</span><b class="num" id="hIn">0 ₺</b></div><div><span>Gider</span><b class="num" id="hOut">0 ₺</b></div></div>
+      <div id="hPend" style="font-size:13px;margin-top:10px;opacity:.95"></div>
     </div>
     <h2>Bütçe <button class="linkbtn" id="editBudget">Ayarla</button></h2>
     <div class="card" id="budgetBox"></div>
@@ -376,7 +377,7 @@ function renderTx(){
     return `<div class="dayhead"><span>${dayName(d)}</span><span class="num">${fmt(net,true)}</span></div><div class="card">${by[d].map(txRow).join('')}</div>`; }).join('');
 }
 function txRow(t){ const c=catOf(t.type,t.cat);
-  return `<div class="row tap" data-tx="${t.id}"><div class="ic">${c.emoji}</div><div class="t"><b>${esc(t.note||c.name)}</b><span>${esc(c.name)}${t.bill?' · ödeme':''}${t.rec?' · 🔁 düzenli':''}${t.src?' · 🧾 '+esc(t.src):''}</span></div><div class="amt num ${t.type==='in'?'pos':''}">${t.type==='in'?'+':'−'}${fmt(t.amount)}</div></div>`; }
+  return `<div class="row tap" data-tx="${t.id}"><div class="ic">${c.emoji}</div><div class="t"><b>${esc(t.note||c.name)}</b><span>${esc(c.name)}${t.bill?(t.auto?' · 🔁 otomatik ödeme':' · ödeme'):''}${t.rec?' · 🔁 düzenli':''}${t.src?' · 🧾 '+esc(t.src):''}</span></div><div class="amt num ${t.type==='in'?'pos':''}">${t.type==='in'?'+':'−'}${fmt(t.amount)}</div></div>`; }
 $('#txList').onclick = e => { const r=e.target.closest('[data-tx]'); if(r) txForm(S.tx.find(t=>t.id===r.dataset.tx)); };
 $('#txCats').onclick = e => { const b=e.target.closest('[data-f]'); if(!b) return; txFilter=b.dataset.f; renderTx(); };
 $('#txSearch').oninput = e => { txQ=e.target.value.trim(); renderTx(); };
@@ -602,11 +603,38 @@ $('#icopy').onclick = async () => { try{ await navigator.clipboard.writeText(S.i
 $('#icheck').onclick = () => checkInbox(true);
 $('#inew').onclick = () => { if(!confirm('Yeni kod üretilsin mi? Eski kod artık çalışmaz; yeni kodu Claude\'a tekrar söylemen gerekir.')) return; S.inboxCode=newInboxCode(); save(); renderInbox(); toast('Yeni kod üretildi'); };
 
+// ---------- taksit/faturaların otomatik gider yazılması ----------
+function migrateBillsAuto(){
+  if(S.billAutoV) return;
+  for(const b of S.bills) if(['fatura','taksit'].includes(b.kind)){ if(b.auto===undefined) b.auto=true; if(!b.autoFrom) b.autoFrom = new Date().getDate()>b.dueDay ? addMonths(mkey(),1) : mkey(); }
+  S.billAutoV=1; save();
+}
+function applyBills(){
+  const t=today(), made=[];
+  for(const b of S.bills){
+    if(!['fatura','taksit'].includes(b.kind) || b.auto===false || !(b.amount>0)) continue;
+    for(const o of occUntil(b, t)){
+      if(o.key<(b.autoFrom||mkey()) || (b.noauto||{})[o.key]) continue;
+      const tx={id:uid(), type:'out', amount:b.amount, cat:b.cat||(b.kind==='fatura'?'fatura':'borc'), note:b.name+(b.kind==='taksit'?` (${o.idx}/${b.count})`:''), date:o.date, bill:b.id, auto:true};
+      S.tx.push(tx); b.paid[o.key]=true; made.push(tx);
+    }
+  }
+  if(made.length){ save(); toast(made.length===1 ? `💳 ${made[0].note} gider yazıldı: −${fmt(made[0].amount)}` : `💳 ${made.length} ödeme gider yazıldı`); }
+  return made.length;
+}
+function pendingThisMonth(){
+  const t=today(), end=mkey()+'-31'; let sum=0;
+  for(const b of S.bills){ if(b.kind==='alacak') continue; for(const o of occUntil(b, end)) if(o.date>=t && o.date.slice(0,7)===mkey()) sum+=b.amount||0; }
+  return sum;
+}
+
 // ---------- özet ----------
 function renderHome(){
   renderRec();
   const s=sums(curM);
   $('#hLeft').textContent=fmt(s.i-s.o); $('#hIn').textContent=fmt(s.i); $('#hOut').textContent=fmt(s.o);
+  const pend = curM===mkey() ? pendingThisMonth() : 0;
+  $('#hPend').innerHTML = pend ? `Bu ay daha ödenecek: <b>${fmt(pend)}</b> · Ay sonu tahmini kalan: <b>${fmt(s.i-s.o-pend)}</b>` : '';
   // bütçe
   const rows=[];
   const bar=(name,spent,lim)=>{ const r=spent/lim; return `<div class="brow"><div class="bh"><b>${name}</b><span class="num">${fmt(spent)} / ${fmt(lim)}</span></div><div class="bar ${r>=1?'over':r>=.8?'warn':''}"><i style="width:${Math.min(100,r*100)}%"></i></div></div>`; };
@@ -923,7 +951,9 @@ function drawBillForm(){
            : `<label class="f"><span>Her ayın</span><select id="bDay">${Array.from({length:31},(_,i)=>`<option value="${i+1}" ${f.dueDay===i+1?'selected':''}>${i+1}. günü</option>`).join('')}</select></label>`}</div>
     ${f.kind==='taksit' && !f.id ? `<div class="f2"><label class="f"><span>Toplam taksit</span><input id="bCount" inputmode="numeric" value="${f.count}"></label><label class="f"><span>Ödenmiş taksit</span><input id="bPaid" inputmode="numeric" value="${f.paidN||0}"></label></div>` : ''}
     ${f.kind==='taksit' && f.id ? `<p class="note">${paidCount(f)}/${f.count} taksit ödendi.</p>` : ''}
-    ${f.kind==='kart' ? '<p class="note">Tutar her ay değişir; "Ödendi" derken o ayın ekstresini yazarsın.</p>' : ''}
+    ${f.kind==='kart' ? '<p class="note">Tutar her ay değişir; "Ödendi" derken o ayın ekstresini yazarsın. Harcamalar ekstreden geldiği için otomatik gider yazılmaz.</p>' : ''}
+    ${['fatura','taksit'].includes(f.kind) ? `<div class="card" style="margin-bottom:8px"><div class="nrow"><span>🔁 Günü gelince otomatik gider yaz</span><button class="tgl ${f.auto!==false?'on':''}" data-a="auto" aria-label="Otomatik gider"></button></div></div>
+      <p class="note" style="margin:-2px 2px 10px">Açıkken ödeme günü gelince bu ayın giderine kendiliğinden yazılır ve ödendi sayılır.</p>` : ''}
     <button class="btn" data-a="save" style="margin-top:6px">Kaydet</button>
     ${f.id ? `${!isOnce(f)&&paidCount(f)?'<button class="btn ghost" data-a="undo" style="margin-top:10px">Son ödemeyi geri al</button>':''}<button class="btn danger" data-a="del">Ödemeyi sil</button>` : ''}`, billFormClick);
 }
@@ -937,13 +967,17 @@ function billFormClick(e){
   const b=e.target.closest('button'); if(!b) return;
   if(b.dataset.kind){ readBillForm(); bf.kind=b.dataset.kind; drawBillForm(); return; }
   const a=b.dataset.a; if(!a) return;
+  if(a==='auto'){ bf.auto = bf.auto===false; b.classList.toggle('on', bf.auto!==false); return; }
   const real=S.bills.find(x=>x.id===bf.id);
   if(a==='del'){ if(!confirm(`"${bf.name}" silinsin mi?`)) return; S.bills=S.bills.filter(x=>x.id!==bf.id); save(); closeSheet(); renderAll(); return; }
-  if(a==='undo'){ const ks=Object.keys(real.paid).sort(); delete real.paid[ks[ks.length-1]]; save(); closeSheet(); renderAll(); toast('Geri alındı'); return; }
+  if(a==='undo'){ const ks=Object.keys(real.paid).sort(), k=ks[ks.length-1]; delete real.paid[k];
+    if(k!=='once'){ const due=dueOf(k, real.dueDay), t=S.tx.find(x=>x.bill===real.id && x.auto && x.date===due); if(t) S.tx=S.tx.filter(x=>x!==t); (real.noauto ||= {})[k]=true; }
+    save(); closeSheet(); renderAll(); toast('Geri alındı'); return; }
   readBillForm();
   if(!bf.name) return toast('Ad yaz');
   if(bf.kind!=='kart' && !(bf.amount>0)) return toast('Tutarı yaz');
-  if(real){ Object.assign(real,{name:bf.name, amount:bf.amount, dueDay:bf.dueDay, date:bf.date}); }
+  if(real){ Object.assign(real,{name:bf.name, amount:bf.amount, dueDay:bf.dueDay, date:bf.date});
+    if(['fatura','taksit'].includes(real.kind)){ const was=real.auto!==false; real.auto = bf.auto!==false; if(real.auto && !was){ const s0 = new Date().getDate()>real.dueDay ? addMonths(mkey(),1) : mkey(); if(!real.autoFrom || real.autoFrom<s0) real.autoFrom=s0; } } }
   else {
     const nb={id:uid(), kind:bf.kind, name:bf.name, amount:bf.amount, paid:{}, cat:{fatura:'fatura',kart:'borc',taksit:'borc',borc:'borc',alacak:'diger_in'}[bf.kind]};
     if(isOnce(nb)) nb.date=bf.date;
@@ -952,10 +986,11 @@ function billFormClick(e){
       const first = new Date().getDate()>bf.dueDay ? addMonths(mkey(),1) : mkey();
       if(nb.kind==='taksit'){ nb.count=bf.count; nb.start=addMonths(first,-bf.paidN); for(let i=0;i<bf.paidN;i++) nb.paid[addMonths(nb.start,i)]=true; }
       else nb.start=first;
+      if(['fatura','taksit'].includes(nb.kind)){ nb.auto = bf.auto!==false; nb.autoFrom = first; }
     }
     S.bills.push(nb);
   }
-  save(); closeSheet(); renderAll(); toast('Kaydedildi ✓');
+  save(); closeSheet(); const n=applyBills(); renderAll(); if(!n) toast('Kaydedildi ✓');
 }
 $('#addBill').onclick = () => billForm();
 
@@ -1208,9 +1243,9 @@ function renderAll(){
   renderImpUndo(); renderInbox();
   renderHome(); renderTx(); renderBills(); renderPeople(); renderNeeds(); renderAssets(); renderNotif();
 }
-document.addEventListener('visibilitychange', ()=>{ if(!document.hidden){ applyRecurring(); renderAll(); fetchPrices(); checkInbox(); } });
+document.addEventListener('visibilitychange', ()=>{ if(!document.hidden){ applyRecurring(); applyBills(); renderAll(); fetchPrices(); checkInbox(); } });
 
-delete S.stmtToken; migrate(); migrateCats(); applyRecurring(); setSeg(S.ui.billSeg||'pay'); renderAll(); writeSnap(); syncPush(); fetchPrices(); checkInbox();
+delete S.stmtToken; migrate(); migrateCats(); migrateBillsAuto(); applyRecurring(); applyBills(); setSeg(S.ui.billSeg||'pay'); renderAll(); writeSnap(); syncPush(); fetchPrices(); checkInbox();
 const qp=new URLSearchParams(location.search).get('tab'); if(qp){ history.replaceState(null,'',location.pathname); goTab(qp); }
 if('serviceWorker' in navigator && location.protocol.startsWith('http')){
   navigator.serviceWorker.register('sw.js').catch(()=>{});

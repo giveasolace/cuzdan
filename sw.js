@@ -1,4 +1,4 @@
-const CACHE = 'cuzdan-v11';
+const CACHE = 'cuzdan-v12';
 const FILES = ['./', 'index.html', 'manifest.webmanifest', 'icon-180.png', 'icon-192.png', 'icon-512.png'];
 
 self.addEventListener('install', e => {
