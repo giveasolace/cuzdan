@@ -170,6 +170,7 @@ nav button.plus{flex:none;width:58px;height:58px;margin:-22px 6px 0;border-radiu
     <div class="card" id="donutBox"></div>
     <h2>Yaklaşan ödemeler <button class="linkbtn" data-go="bills">Tümü</button></h2>
     <div class="card" id="upBox"></div>
+    <div id="needCard" style="margin-top:12px"></div>
     <h2>Net varlık <button class="linkbtn" data-go="assets">Detay</button></h2>
     <div class="kpis" id="netBox"></div>
   </section>
@@ -184,11 +185,28 @@ nav button.plus{flex:none;width:58px;height:58px;margin:-22px 6px 0;border-radiu
 
   <!-- ÖDEMELER -->
   <section class="view" id="v-bills">
-    <h1>Ödemeler</h1>
-    <p class="sub">Faturalar, kart, taksit, borç ve alacaklar.</p>
-    <div class="kpis" id="billKpis"></div>
-    <div id="billList"></div>
-    <button class="btn" id="addBill" style="margin-top:16px">+ Ödeme ekle</button>
+    <h1 id="billH">Ödemeler</h1>
+    <div class="seg" id="billSeg" style="margin:8px 0 14px"><button data-seg="pay">Ödemeler</button><button data-seg="people">Borç/Alacak</button><button data-seg="needs">İhtiyaçlar</button></div>
+    <div id="segPay">
+      <div class="kpis" id="billKpis"></div>
+      <div id="billList"></div>
+      <button class="btn" id="addBill" style="margin-top:16px">+ Ödeme ekle</button>
+    </div>
+    <div id="segPeople" hidden>
+      <div class="kpis" id="pplKpis"></div>
+      <div id="pplList"></div>
+      <button class="btn" id="addPerson" style="margin-top:16px">+ Kişi ekle</button>
+    </div>
+    <div id="segNeeds" hidden>
+      <div class="card pad" id="needSum"></div>
+      <div class="card pad" style="margin-top:12px">
+        <div class="f2"><label class="f" style="flex:2"><span>Ne lazım?</span><input id="nName" placeholder="Örn: Kış montu" autocomplete="off"></label>
+        <label class="f"><span>Tahmini tutar</span><input id="nAmt" inputmode="decimal" placeholder="0 ₺"></label></div>
+        <div class="chips wrap" id="nPrio"></div>
+        <button class="btn" id="nAdd">+ Listeye ekle</button>
+      </div>
+      <div id="needList"></div>
+    </div>
   </section>
 
   <!-- VARLIK -->
@@ -244,7 +262,8 @@ const toCats = a => a.map(([id,name,emoji])=>({id,name,emoji}));
 
 const defaults = () => ({
   tx:[], cats:{out:toCats(DEF_OUT), in:toCats(DEF_IN)}, budget:{total:0, cats:{}}, goals:[], bills:[], assets:[],
-  prices:{}, pricesAt:0, notif:{hour:10, daysBefore:2, subscribed:false}, testAt:0
+  prices:{}, pricesAt:0, notif:{hour:10, daysBefore:2, subscribed:false}, testAt:0,
+  people:[], needs:[], ui:{billSeg:'pay'}, migrated:false
 });
 let S;
 try { S = Object.assign(defaults(), JSON.parse(localStorage.getItem(KEY)||'{}')); } catch(e){ S = defaults(); }
@@ -372,6 +391,8 @@ function renderHome(){
   // yaklaşan
   const up=upcoming().slice(0,3);
   $('#upBox').innerHTML = up.length ? up.map(billRow).join('') : '<div class="empty">Yaklaşan ödeme yok.</div>';
+  const ol=openNeeds();
+  $('#needCard').innerHTML = ol.length ? `<div class="card"><div class="row tap" data-needs="1"><div class="ic">🛍️</div><div class="t"><b>İhtiyaç listesi</b><span>${ol.length} kalem${ol.some(n=>n.prio==='acil')?' · '+ol.filter(n=>n.prio==='acil').length+' acil':''}</span></div><div class="amt num">${fmt(ol.reduce((s,n)=>s+(n.amount||0),0))}</div></div></div>` : '';
   // net
   const a=assetTotals(), debt=debtLeft();
   $('#netBox').innerHTML = `<div class="kpi"><span>Varlıklar</span><b class="num">${fmt(a.value)}</b></div><div class="kpi"><span>Kalan borç</span><b class="num ${debt?'neg':''}">${fmt(debt)}</b></div>
@@ -405,8 +426,156 @@ function occUntil(b, until){
 }
 function upcoming(){ return S.bills.map(b=>({b, o:nextOcc(b)})).filter(x=>x.o).sort((a,b)=>a.o.date.localeCompare(b.o.date)); }
 const paidCount = b => Object.keys(b.paid).length;
-function debtLeft(){ return S.bills.reduce((s,b)=> s + (b.kind==='taksit' ? Math.max(0,b.count-paidCount(b))*b.amount : b.kind==='borc' && !b.paid.once ? b.amount : 0), 0); }
-function receivable(){ return S.bills.reduce((s,b)=> s + (b.kind==='alacak' && !b.paid.once ? b.amount : 0), 0); }
+function debtLeft(){ return S.bills.reduce((s,b)=> s + (b.kind==='taksit' ? Math.max(0,b.count-paidCount(b))*b.amount : b.kind==='borc' && !b.paid.once ? b.amount : 0), 0)
+  + S.people.reduce((s,p)=>{ const b=bal(p); return s+(b<0?-b:0); }, 0); }
+function receivable(){ return S.bills.reduce((s,b)=> s + (b.kind==='alacak' && !b.paid.once ? b.amount : 0), 0)
+  + S.people.reduce((s,p)=>{ const b=bal(p); return s+(b>0?b:0); }, 0); }
+
+// ---------- kişiler: borç / alacak ----------
+const PT = {lend:['Borç verdim',1,'💸'], borrow:['Borç aldım',-1,'🤲'], payIn:['Ödeme aldım',-1,'📥'], payOut:['Ödeme yaptım',1,'📤']};
+const bal = p => Math.round(p.entries.reduce((s,e)=>s+PT[e.t][1]*e.amount,0)*100)/100;
+const open = p => Math.abs(bal(p))>0.004;
+const balText = b => b>0.004 ? `sana ${fmt(b)} borçlu` : b<-0.004 ? `ona ${fmt(-b)} borçlusun` : 'hesap kapandı';
+function migrate(){
+  if(S.migrated) return;
+  for(const b of S.bills.filter(isOnce)){
+    if(b.paid.once || !(b.amount>0)) continue;
+    let p=S.people.find(x=>x.name.toLocaleLowerCase('tr')===b.name.toLocaleLowerCase('tr'));
+    if(!p){ p={id:uid(), name:b.name, entries:[]}; S.people.push(p); }
+    p.entries.push({id:uid(), t:b.kind==='alacak'?'lend':'borrow', amount:b.amount, date:b.date, note:'Önceki kayıttan'}); p.due=b.date;
+  }
+  S.bills=S.bills.filter(b=>!isOnce(b)); S.migrated=true; save();
+}
+function renderPeople(){
+  const owe=S.people.reduce((s,p)=>{const b=bal(p);return s+(b<0?-b:0);},0), get=S.people.reduce((s,p)=>{const b=bal(p);return s+(b>0?b:0);},0);
+  $('#pplKpis').innerHTML = `<div class="kpi"><span>Borçlarım</span><b class="num ${owe?'neg':''}">${fmt(owe)}</b></div><div class="kpi"><span>Alacaklarım</span><b class="num ${get?'pos':''}">${fmt(get)}</b></div>`;
+  const list=[...S.people].sort((a,b)=>(open(b)-open(a))||Math.abs(bal(b))-Math.abs(bal(a)));
+  $('#pplList').innerHTML = list.length ? `<div class="card" style="margin-top:14px">${list.map(p=>{
+    const b=bal(p), o=open(p), late=o && p.due && p.due<today();
+    return `<div class="row tap ${late?'late':''}" data-person="${p.id}" style="${o?'':'opacity:.5'}"><div class="ic">${b>0.004?'🟢':b<-0.004?'🔴':'✅'}</div>
+      <div class="t"><b>${esc(p.name)}</b><span>${balText(b)}${o&&p.due?` · ${late?dueLabel(p.due):'vade '+shortDate(p.due)}`:''}</span></div>
+      <div class="amt num ${b>0.004?'pos':b<-0.004?'neg':'mut'}">${o?fmt(Math.abs(b)):'—'}</div></div>`; }).join('')}</div>`
+    : `<div class="card" style="margin-top:14px"><div class="empty">Kime borcun var, kimden alacağın var?<br>Kişiyi ekle; verdikçe, aldıkça, ödedikçe yaz — bakiyeyi ben tutayım.</div></div>`;
+}
+function personSheet(p){
+  const b=bal(p);
+  openSheet(esc(p.name), `
+    <div style="text-align:center;margin:4px 0 14px"><div class="num" style="font-size:32px;font-weight:800" class="${b>0?'pos':b<0?'neg':''}"><span class="${b>0.004?'pos':b<-0.004?'neg':''}">${fmt(Math.abs(b))}</span></div><div class="mut" style="font-weight:600">${balText(b)}</div></div>
+    <div class="catgrid" style="grid-template-columns:repeat(2,1fr);margin-top:0">${Object.entries(PT).map(([k,[n,,em]])=>`<button data-pt="${k}"><div>${em}</div>${n}</button>`).join('')}</div>
+    <div class="f2" style="align-items:flex-end"><label class="f"><span>Vade (isteğe bağlı)</span><input type="date" id="pDue" value="${p.due||''}"></label><button class="btn ghost small" data-a="due" style="margin-bottom:12px;height:46px">Kaydet</button></div>
+    <h2>Hareketler</h2>
+    <div class="card">${p.entries.length ? [...p.entries].sort((a,c)=>c.date.localeCompare(a.date)).map(e=>`<div class="row"><div class="ic">${PT[e.t][2]}</div><div class="t"><b>${PT[e.t][0]}</b><span>${shortDate(e.date)}${e.note?' · '+esc(e.note):''}</span></div>
+      <div class="amt num ${PT[e.t][1]>0?'':'mut'}">${fmt(e.amount)}</div><button class="x" data-edel="${e.id}" style="color:var(--muted);font-size:20px;padding:2px 6px">×</button></div>`).join('') : '<div class="empty">Henüz hareket yok.</div>'}</div>
+    <button class="btn danger" data-a="pdel" style="margin-top:8px">Kişiyi sil</button>`, e => {
+      const bt=e.target.closest('button'); if(!bt) return;
+      if(bt.dataset.pt) return entryForm(p, bt.dataset.pt);
+      if(bt.dataset.edel){ if(!confirm('Bu hareket silinsin mi?')) return; p.entries=p.entries.filter(x=>x.id!==bt.dataset.edel); save(); renderAll(); return personSheet(p); }
+      if(bt.dataset.a==='due'){ p.due=$('#pDue').value||undefined; save(); renderAll(); toast(p.due?'Vade kaydedildi':'Vade kaldırıldı'); return; }
+      if(bt.dataset.a==='pdel'){ if(!confirm(`"${p.name}" ve tüm hareketleri silinsin mi?`)) return; S.people=S.people.filter(x=>x!==p); save(); closeSheet(); renderAll(); }
+    });
+}
+function entryForm(p, t){
+  openSheet(`${PT[t][2]} ${PT[t][0]}`, `<p class="sub">${esc(p.name)}${open(p)?' · şu an '+balText(bal(p)):''}</p>
+    <input class="amtin num" id="eAmt" inputmode="decimal" placeholder="0 ₺">
+    <div class="f2"><label class="f"><span>Tarih</span><input type="date" id="eDate" value="${today()}"></label><label class="f"><span>Not</span><input id="eNote" placeholder="İsteğe bağlı" autocomplete="off"></label></div>
+    <button class="btn" data-a="ok">Kaydet</button>`, e => {
+      if(!e.target.closest('[data-a=ok]')) return;
+      const amt=parseAmt($('#eAmt').value); if(!(amt>0)) return toast('Tutarı yaz');
+      p.entries.push({id:uid(), t, amount:Math.round(amt*100)/100, date:$('#eDate').value||today(), note:$('#eNote').value.trim()});
+      if(!open(p)) delete p.due;
+      save(); renderAll(); buzz(); toast(open(p) ? `${p.name}: ${balText(bal(p))}` : `✅ ${p.name} ile hesap kapandı`); personSheet(p);
+    });
+  setTimeout(()=>$('#eAmt')?.focus(),300);
+}
+let npFirst='lend';
+function addPersonSheet(){
+  openSheet('Yeni kişi', `<label class="f"><span>İsim</span><input id="npName" placeholder="Örn: Ahmet" autocomplete="off"></label>
+    <div class="seg"><button data-np="lend" class="${npFirst==='lend'?'on':''}">Ben borç verdim</button><button data-np="borrow" class="${npFirst==='borrow'?'on':''}">Ben borç aldım</button></div>
+    <div class="f2"><label class="f"><span>Tutar (boş da olabilir)</span><input id="npAmt" inputmode="decimal" placeholder="0 ₺"></label><label class="f"><span>Vade (isteğe bağlı)</span><input type="date" id="npDue"></label></div>
+    <label class="f"><span>Not</span><input id="npNote" placeholder="Örn: Araba tamiri için" autocomplete="off"></label>
+    <button class="btn" data-a="ok">Kaydet</button>`, e => {
+      const b=e.target.closest('button'); if(!b) return;
+      if(b.dataset.np){ npFirst=b.dataset.np; $$('#shBody [data-np]').forEach(x=>x.classList.toggle('on',x===b)); return; }
+      if(b.dataset.a!=='ok') return;
+      const name=$('#npName').value.trim(); if(!name) return toast('İsim yaz');
+      const p={id:uid(), name, entries:[]}; const amt=parseAmt($('#npAmt').value);
+      if(amt>0){ p.entries.push({id:uid(), t:npFirst, amount:Math.round(amt*100)/100, date:today(), note:$('#npNote').value.trim()}); if($('#npDue').value) p.due=$('#npDue').value; }
+      S.people.push(p); save(); closeSheet(); renderAll(); toast(amt>0?`${name}: ${balText(bal(p))}`:'Kişi eklendi');
+    });
+  setTimeout(()=>$('#npName')?.focus(),300);
+}
+$('#addPerson').onclick = addPersonSheet;
+$('#pplList').onclick = e => { const r=e.target.closest('[data-person]'); if(r) personSheet(S.people.find(p=>p.id===r.dataset.person)); };
+
+// ---------- ihtiyaç listesi ----------
+const PRIO = {acil:['🔴','Acil',0], normal:['🟡','Normal',1], sonra:['⚪','Sonra',2]};
+let needPrio='normal';
+const openNeeds = () => S.needs.filter(n=>!n.done).sort((a,b)=>PRIO[a.prio][2]-PRIO[b.prio][2] || a.created-b.created);
+function renderNeeds(){
+  const ol=openNeeds(), total=ol.reduce((s,n)=>s+(n.amount||0),0), sm=sums(mkey()), left=sm.i-sm.o;
+  const r = left>0 ? total/left : null;
+  $('#needSum').innerHTML = ol.length
+    ? `<div style="display:flex;justify-content:space-between;align-items:baseline"><b style="font-size:16px">${ol.length} ihtiyaç</b><b class="num" style="font-size:22px">${fmt(total)}</b></div>
+       ${ol.some(n=>n.prio==='acil')?`<div class="note" style="margin-top:4px">🔴 Acil olanlar: ${fmt(ol.filter(n=>n.prio==='acil').reduce((s,n)=>s+(n.amount||0),0))}</div>`:''}
+       ${r!=null ? `<div class="bar ${r>=1?'over':r>=.8?'warn':''}" style="margin-top:12px"><i style="width:${Math.min(100,r*100)}%"></i></div><div class="note">Bu ay kalan paranın (${fmt(left)}) %${Math.round(r*100)}'i${r>1?' — hepsine yetmiyor, acilden başla':''}</div>`
+                 : `<div class="note" style="margin-top:6px">Bu ay için kalan paran yok gibi görünüyor; acil olanlara odaklan.</div>`}`
+    : `<div class="empty" style="padding:6px">İhtiyaç listen boş. Aşağıdan ekle; neye ne kadar lazım, hep önünde dursun.</div>`;
+  $('#nPrio').innerHTML = Object.entries(PRIO).map(([k,[em,n]])=>`<button data-prio="${k}" class="${needPrio===k?'on':''}">${em} ${n}</button>`).join('');
+  const done=S.needs.filter(n=>n.done).sort((a,b)=>(b.doneAt||'').localeCompare(a.doneAt||'')).slice(0,20);
+  $('#needList').innerHTML = (ol.length ? `<h2>Lazım olanlar</h2><div class="card">${ol.map(n=>`<div class="row tap" data-need="${n.id}"><div class="ic">${PRIO[n.prio][0]}</div>
+      <div class="t"><b>${esc(n.name)}</b><span>${PRIO[n.prio][1]}${n.note?' · '+esc(n.note):''}</span></div><div class="amt num">${n.amount?fmt(n.amount):'—'}</div><button class="pill" data-buy="${n.id}">Aldım</button></div>`).join('')}</div>` : '')
+    + (done.length ? `<h2>Alındı</h2><div class="card">${done.map(n=>{ const d=(n.paid||0)-(n.amount||0);
+      return `<div class="row tap" data-need="${n.id}" style="opacity:.75"><div class="ic">✅</div><div class="t"><b>${esc(n.name)}</b><span>${shortDate(n.doneAt)}${n.amount&&n.paid?` · tahmin ${fmt(n.amount)} (${d>0?'+':''}${fmt(d)})`:''}</span></div><div class="amt num">${n.paid?fmt(n.paid):'—'}</div></div>`; }).join('')}</div>` : '');
+}
+$('#nPrio').onclick = e => { const b=e.target.closest('[data-prio]'); if(!b) return; needPrio=b.dataset.prio; renderNeeds(); };
+$('#nAdd').onclick = () => {
+  const name=$('#nName').value.trim(); if(!name) return toast('Ne lazım, yaz');
+  S.needs.push({id:uid(), name, amount:parseAmt($('#nAmt').value)||0, prio:needPrio, done:false, created:Date.now()});
+  $('#nName').value=''; $('#nAmt').value=''; save(); renderAll(); toast('🛍️ Listeye eklendi'); $('#nName').focus();
+};
+$('#needList').onclick = e => {
+  const by=e.target.closest('[data-buy]'); if(by){ e.stopPropagation(); return buyNeed(S.needs.find(n=>n.id===by.dataset.buy)); }
+  const r=e.target.closest('[data-need]'); if(r) needSheet(S.needs.find(n=>n.id===r.dataset.need));
+};
+function buyNeed(n){
+  openSheet('🛍️ Aldım', `<p class="sub">${esc(n.name)}${n.amount?' · tahmini '+fmt(n.amount):''}</p>
+    <input class="amtin num" id="bnAmt" inputmode="decimal" value="${amtStr(n.amount)}" placeholder="0 ₺">
+    <label class="f"><span>Kategori</span><select id="bnCat">${S.cats.out.map(c=>`<option value="${c.id}" ${(n.cat||'diger')===c.id?'selected':''}>${c.emoji} ${esc(c.name)}</option>`).join('')}</select></label>
+    <label class="chk"><input type="checkbox" id="bnTx" checked> Gider olarak da kaydet</label>
+    <button class="btn" data-a="ok">Aldım ✓</button>`, e => {
+      if(!e.target.closest('[data-a=ok]')) return;
+      const amt=parseAmt($('#bnAmt').value)||0; n.cat=$('#bnCat').value;
+      n.done=true; n.doneAt=today(); n.paid=amt;
+      if($('#bnTx').checked && amt>0){ const t={id:uid(), type:'out', amount:Math.round(amt*100)/100, cat:n.cat, note:n.name, date:today()}; S.tx.push(t); n.txId=t.id; }
+      save(); closeSheet(); renderAll(); buzz(); toast(budgetWarn({type:'out',cat:n.cat,date:today()}) || `✅ ${n.name} alındı`);
+    });
+}
+function needSheet(n){
+  let pr=n.prio;
+  openSheet(n.done?'Alınan ihtiyaç':'İhtiyacı düzenle', `
+    <label class="f"><span>Ne lazım?</span><input id="enName" value="${esc(n.name)}" autocomplete="off"></label>
+    <div class="f2"><label class="f"><span>Tahmini tutar</span><input id="enAmt" inputmode="decimal" value="${amtStr(n.amount)}" placeholder="0 ₺"></label>
+    <label class="f"><span>Not</span><input id="enNote" value="${esc(n.note||'')}" placeholder="Örn: indirimi bekle" autocomplete="off"></label></div>
+    ${n.done?'':`<div class="chips wrap">${Object.entries(PRIO).map(([k,[em,nm]])=>`<button data-eprio="${k}" class="${pr===k?'on':''}">${em} ${nm}</button>`).join('')}</div>`}
+    <button class="btn" data-a="save">Kaydet</button>
+    ${n.done?'<button class="btn ghost" data-a="undo" style="margin-top:10px">Alınmadı olarak geri al</button>':''}
+    <button class="btn danger" data-a="del">Sil</button>`, e => {
+      const b=e.target.closest('button'); if(!b) return;
+      if(b.dataset.eprio){ pr=b.dataset.eprio; $$('#shBody [data-eprio]').forEach(x=>x.classList.toggle('on',x===b)); return; }
+      if(b.dataset.a==='del'){ if(!confirm('Silinsin mi?')) return; S.needs=S.needs.filter(x=>x!==n); save(); closeSheet(); renderAll(); return; }
+      if(b.dataset.a==='undo'){ if(n.txId) S.tx=S.tx.filter(t=>t.id!==n.txId); n.done=false; delete n.doneAt; delete n.paid; delete n.txId; save(); closeSheet(); renderAll(); return toast('Listeye geri alındı (gider kaydı da silindi)'); }
+      if(b.dataset.a==='save'){ const nm=$('#enName').value.trim(); if(!nm) return toast('Ad yaz'); n.name=nm; n.amount=parseAmt($('#enAmt').value)||0; n.note=$('#enNote').value.trim(); n.prio=pr; save(); closeSheet(); renderAll(); toast('Kaydedildi'); }
+    });
+}
+
+// ---------- ödemeler sekmesindeki bölümler ----------
+function setSeg(s){
+  S.ui.billSeg=s;
+  $$('#billSeg button').forEach(b=>b.classList.toggle('on', b.dataset.seg===s));
+  $('#segPay').hidden = s!=='pay'; $('#segPeople').hidden = s!=='people'; $('#segNeeds').hidden = s!=='needs';
+  $('#billH').textContent = {pay:'Ödemeler', people:'Borç / Alacak', needs:'İhtiyaç listesi'}[s];
+}
+$('#billSeg').onclick = e => { const b=e.target.closest('[data-seg]'); if(b){ setSeg(b.dataset.seg); try{ localStorage.setItem(KEY, JSON.stringify(S)); }catch(_){} } };
 function dueLabel(d){ const n=diffDays(today(), d); return n<0 ? `${-n} gün gecikti` : n===0 ? 'Bugün' : n===1 ? 'Yarın' : `${n} gün sonra`; }
 function billRow({b,o}){
   const late=o.date<today(), [em]=BK[b.kind];
@@ -428,7 +597,8 @@ function renderBills(){
 document.addEventListener('click', e => {
   const p=e.target.closest('[data-pay]'); if(p){ e.stopPropagation(); return payBill(S.bills.find(b=>b.id===p.dataset.pay)); }
   const r=e.target.closest('[data-bill]'); if(r && !e.target.closest('#sheet')) return billForm(S.bills.find(b=>b.id===r.dataset.bill));
-  const g=e.target.closest('[data-go]'); if(g) return goTab(g.dataset.go);
+  const g=e.target.closest('[data-go]'); if(g){ goTab(g.dataset.go); if(g.dataset.go==='bills') setSeg('pay'); return; }
+  const nd=e.target.closest('[data-needs]'); if(nd){ goTab('bills'); setSeg('needs'); return; }
 }, true);
 function payBill(b){
   const o=nextOcc(b); if(!o) return;
@@ -454,7 +624,7 @@ function billForm(b){
 function drawBillForm(){
   const f=bf, once=isOnce(f);
   openSheet(f.id?'Ödemeyi düzenle':'Yeni ödeme', `
-    ${f.id?'':`<div class="chips wrap">${Object.entries(BK).map(([k,[em,n]])=>`<button data-kind="${k}" class="${f.kind===k?'on':''}">${em} ${n}</button>`).join('')}</div>`}
+    ${f.id?'':`<div class="chips wrap">${Object.entries(BK).filter(([k])=>!isOnce({kind:k})).map(([k,[em,n]])=>`<button data-kind="${k}" class="${f.kind===k?'on':''}">${em} ${n}</button>`).join('')}</div>`}
     <label class="f"><span>Ad</span><input id="bName" value="${esc(f.name)}" placeholder="${{fatura:'Örn: Kira, Elektrik, İnternet',kart:'Örn: Garanti kart',taksit:'Örn: Telefon taksidi',borc:'Örn: Ahmet\'e borç',alacak:'Örn: Mehmet\'ten alacak'}[f.kind]}" autocomplete="off"></label>
     <div class="f2"><label class="f"><span>${f.kind==='kart'?'Tahmini tutar':'Tutar'}</span><input id="bAmt" inputmode="decimal" value="${amtStr(f.amount)}" placeholder="0 ₺"></label>
     ${once ? `<label class="f"><span>Tarih</span><input type="date" id="bDate" value="${f.date}"></label>`
@@ -670,6 +840,10 @@ function reminderDates(){
     if(o.date<t){ set.add(t); continue; }
     set.add(o.date); const pre=addDays(o.date,-S.notif.daysBefore); if(pre>=t) set.add(pre);
   }
+  for(const p of S.people) if(p.due && open(p)){
+    if(p.due<t){ set.add(t); continue; }
+    if(p.due<=until){ set.add(p.due); const pre=addDays(p.due,-S.notif.daysBefore); if(pre>=t) set.add(pre); }
+  }
   return [...set].sort().slice(0,120);
 }
 const prefs = () => ({app:'cuzdan', hour:S.notif.hour, dates:reminderDates()});
@@ -719,6 +893,7 @@ async function writeSnap(){
   try{
     const t=today(), until=addDays(t,10), items=[];
     for(const b of S.bills) for(const o of occUntil(b,until)) items.push({name:b.name, amount:b.amount, date:o.date, inc:b.kind==='alacak'});
+    for(const p of S.people) if(p.due && open(p) && p.due<=until){ const b=bal(p); items.push({name:(b<0?'Borç: ':'Alacak: ')+p.name, amount:Math.abs(b), date:p.due, inc:b>0}); }
     items.sort((a,b)=>a.date.localeCompare(b.date));
     const snap={date:t, items:items.slice(0,12), testAt:S.testAt||0};
     const db=await idb(); await new Promise((res,rej)=>{ const tx=db.transaction('kv','readwrite'); tx.objectStore('kv').put(snap,'snap'); tx.oncomplete=res; tx.onerror=()=>rej(tx.error); }); db.close();
@@ -737,11 +912,11 @@ document.addEventListener('click', e => { const b=e.target.closest('[data-mn]');
 
 function renderAll(){
   $$('.mTitle').forEach(x=>x.textContent=monthName(curM)+(curM===mkey()?'':''));
-  renderHome(); renderTx(); renderBills(); renderAssets(); renderNotif();
+  renderHome(); renderTx(); renderBills(); renderPeople(); renderNeeds(); renderAssets(); renderNotif();
 }
 document.addEventListener('visibilitychange', ()=>{ if(!document.hidden){ renderAll(); fetchPrices(); } });
 
-renderAll(); writeSnap(); syncPush(); fetchPrices();
+migrate(); setSeg(S.ui.billSeg||'pay'); renderAll(); writeSnap(); syncPush(); fetchPrices();
 const qp=new URLSearchParams(location.search).get('tab'); if(qp){ history.replaceState(null,'',location.pathname); goTab(qp); }
 if('serviceWorker' in navigator && location.protocol.startsWith('http')){
   navigator.serviceWorker.register('sw.js').catch(()=>{});
