@@ -691,7 +691,7 @@ function renderHome(){
   // net
   const a=assetTotals(), debt=debtLeft();
   $('#netBox').innerHTML = `<div class="kpi"><span>Varlıklar</span><b class="num">${fmt(a.value)}</b></div><div class="kpi"><span>Kalan borç</span><b class="num ${debt?'neg':''}">${fmt(debt)}</b></div>
-    <div class="kpi"><span>Net</span><b class="num">${fmt(a.value-debt+receivable())}</b></div><div class="kpi"><span>Hedeflerde biriken</span><b class="num">${fmt(S.goals.reduce((x,g)=>x+(g.saved||0),0))}</b></div>`;
+    <div class="kpi"><span>Net</span><b class="num">${fmt(a.value-debt+receivable())}</b></div><div class="kpi"><span>Hedeflerde biriken</span><b class="num">${fmt(goalsTL())}</b></div>`;
 }
 $('#editBudget').onclick = () => {
   openSheet('Aylık bütçe', `<p class="sub">Boş bırakılan kategoride limit olmaz. Limitin %80'ine gelince ve aşınca uyarırım.</p>
@@ -1040,7 +1040,7 @@ function assetTotals(){
 }
 async function fetchPrices(force, silent, extra){
   const syms=[...new Set([...S.assets.filter(a=>a.sym && a.kind!=='fund' && a.kind!=='cash').map(a=>a.sym),
-    ...S.people.flatMap(p=>p.entries.map(curOf)).filter(c=>c!=='TRY').map(c=>CUR[c].sym), ...(extra||[])])];
+    ...S.people.flatMap(p=>p.entries.map(curOf)).filter(c=>c!=='TRY').map(c=>CUR[c].sym), ...S.goals.map(g=>g.cur||'TRY').filter(c=>c!=='TRY' && CUR[c]).map(c=>CUR[c].sym), ...(extra||[])])];
   if(!syms.length) return;
   if(!force && Date.now()-S.pricesAt<10*60*1000) return;
   try{
@@ -1063,10 +1063,11 @@ function renderAssets(){
   }).join('') : '<div class="empty">Altın, döviz, hisse, fon, kripto ya da banka hesabını ekle; güncel değeriyle toplam servetini görürsün.</div>';
   // hedefler
   $('#goalList').innerHTML = S.goals.length ? S.goals.map(g=>{
-    const r=Math.min(1,(g.saved||0)/g.target), left=Math.max(0,g.target-(g.saved||0));
-    let tip=''; if(g.deadline && left>0){ const months=Math.max(1,(+g.deadline.slice(0,4)-new Date().getFullYear())*12+(+g.deadline.slice(5,7)-(new Date().getMonth()+1))); tip=` · ayda ${fmt(left/months)} biriktir`; }
-    return `<div class="brow tap" data-goal="${g.id}" style="cursor:pointer"><div class="bh"><b>${esc(g.emoji||'🎯')} ${esc(g.name)}</b><span class="num">${fmt(g.saved||0)} / ${fmt(g.target)}</span></div>
-      <div class="bar"><i style="width:${r*100}%"></i></div><div style="display:flex;justify-content:space-between;align-items:center;margin-top:8px"><span class="note" style="margin:0">%${Math.round(r*100)}${r>=1?' · 🎉 tamamlandı':tip}${g.deadline?' · hedef '+monthName(g.deadline):''}</span><button class="pill" data-gadd="${g.id}">+ Ekle</button></div></div>`;
+    const gc=CUR[g.cur]?g.cur:'TRY', r=Math.min(1,(g.saved||0)/g.target), left=Math.max(0,g.target-(g.saved||0)), rt=rate(gc);
+    let tip=''; if(g.deadline && left>0){ const months=Math.max(1,(+g.deadline.slice(0,4)-new Date().getFullYear())*12+(+g.deadline.slice(5,7)-(new Date().getMonth()+1))); tip=` · ayda ${fmtCur(left/months,gc)} biriktir`; }
+    const tl = gc!=='TRY' ? `<div class="note" style="margin:4px 0 0">${rt!=null?`≈ ${fmt((g.saved||0)*rt)} birikti · hedef ≈ ${fmt(g.target*rt)} (güncel kur)`:'Güncel kur alınamadı'}</div>` : '';
+    return `<div class="brow tap" data-goal="${g.id}" style="cursor:pointer"><div class="bh"><b>${esc(g.emoji||'🎯')} ${esc(g.name)}</b><span class="num">${fmtCur(g.saved||0,gc)} / ${fmtCur(g.target,gc)}</span></div>${tl}
+      <div class="bar" style="margin-top:8px"><i style="width:${r*100}%"></i></div><div style="display:flex;justify-content:space-between;align-items:center;margin-top:8px"><span class="note" style="margin:0">%${Math.round(r*100)}${r>=1?' · 🎉 tamamlandı':tip}${g.deadline?' · hedef '+monthName(g.deadline):''}</span><button class="pill" data-gadd="${g.id}">+ Ekle</button></div></div>`;
   }).join('') : '<div class="empty">Örn: 🚗 Araba peşinatı, ✈️ Tatil, 🛟 Acil durum fonu</div>';
 }
 let af=null;
@@ -1133,34 +1134,47 @@ $('#assetList').onclick = e => { const r=e.target.closest('[data-asset]'); if(r)
 
 // hedefler
 function goalForm(g){
-  const f = g ? {...g} : {name:'', emoji:'🎯', target:0, saved:0, deadline:''};
+  const f = g ? {...g, cur:CUR[g.cur]?g.cur:'TRY'} : {name:'', emoji:'🎯', target:0, saved:0, deadline:'', cur:'TRY'};
+  const unit = () => f.cur==='TRY' ? '₺' : CUR[f.cur].u;
   const EM=['🎯','🚗','🏠','✈️','💍','📱','🎓','🛟','💻','🏖️'];
   openSheet(g?'Hedefi düzenle':'Yeni hedef', `
     <div class="chips wrap">${EM.map(x=>`<button data-em="${x}" class="${f.emoji===x?'on':''}" style="font-size:18px">${x}</button>`).join('')}</div>
     <label class="f"><span>Hedef adı</span><input id="gName" value="${esc(f.name)}" placeholder="Örn: Araba peşinatı" autocomplete="off"></label>
-    <div class="f2"><label class="f"><span>Hedef tutar</span><input id="gT" inputmode="decimal" value="${amtStr(f.target)}" placeholder="0 ₺"></label>
-    <label class="f"><span>Biriken</span><input id="gS" inputmode="decimal" value="${amtStr(f.saved)}" placeholder="0 ₺"></label></div>
+    <span class="note" style="display:block;margin:0 2px 6px">Ne cinsinden biriktiriyorsun?</span>
+    ${curChips(f.cur,'gc')}
+    <div class="f2"><label class="f"><span>Hedef (<em id="gU1">${unit()}</em>)</span><input id="gT" inputmode="decimal" value="${amtStr(f.target)}" placeholder="0"></label>
+    <label class="f"><span>Biriken (<em id="gU2">${unit()}</em>)</span><input id="gS" inputmode="decimal" value="${amtStr(f.saved)}" placeholder="0"></label></div>
+    <p class="note" id="gConv" style="margin:-4px 2px 12px"></p>
     <label class="f"><span>Hedef tarih (isteğe bağlı)</span><input type="month" id="gD" value="${f.deadline||''}"></label>
     <button class="btn" data-a="save">Kaydet</button>${g?'<button class="btn danger" data-a="del">Hedefi sil</button>':''}`, e => {
       const b=e.target.closest('button'); if(!b) return;
       if(b.dataset.em){ f.emoji=b.dataset.em; $$('#shBody [data-em]').forEach(x=>x.classList.toggle('on',x===b)); return; }
+      if(b.dataset.gc){ f.cur=b.dataset.gc; $$('#shBody [data-gc]').forEach(x=>x.classList.toggle('on',x===b)); $('#gU1').textContent=unit(); $('#gU2').textContent=unit(); upd(); ensureRate(f.cur, upd); return; }
       if(b.dataset.a==='del'){ if(!confirm('Silinsin mi?')) return; S.goals=S.goals.filter(x=>x.id!==g.id); save(); closeSheet(); renderAll(); return; }
       if(b.dataset.a!=='save') return;
       f.name=$('#gName').value.trim(); f.target=parseAmt($('#gT').value); f.saved=parseAmt($('#gS').value)||0; f.deadline=$('#gD').value;
       if(!f.name) return toast('Ad yaz'); if(!(f.target>0)) return toast('Hedef tutarı yaz');
       if(g) S.goals=S.goals.map(x=>x.id===g.id?{...x,...f}:x); else S.goals.push({...f, id:uid()});
-      save(); closeSheet(); renderAll(); toast('Hedef kaydedildi 🎯');
+      save(); closeSheet(); renderAll(); toast('Hedef kaydedildi 🎯'); if(f.cur!=='TRY') fetchPrices(true, true);
     });
+  const upd = () => { const el=$('#gConv'); if(!el) return; const t=parseAmt($('#gT').value);
+    el.textContent = f.cur==='TRY' ? '' : (rate(f.cur)!=null ? `${t>0?`Hedef ≈ ${fmt(t*rate(f.cur))} · `:''}1 ${CUR[f.cur].u} = ${fmt(rate(f.cur))} (güncel kur)` : 'Güncel kur alınıyor…'); };
+  $('#gT').oninput = upd; upd(); ensureRate(f.cur, upd);
 }
+function goalsTL(){ return S.goals.reduce((x,g)=>{ const c=CUR[g.cur]?g.cur:'TRY', r=rate(c); return x+(g.saved||0)*(r??0); },0); }
 $('#addGoal').onclick = () => goalForm();
 $('#goalList').onclick = e => {
   const add=e.target.closest('[data-gadd]');
   if(add){ const g=S.goals.find(x=>x.id===add.dataset.gadd);
-    openSheet(`${g.emoji} ${esc(g.name)}`, `<p class="sub">Hedefe ne kadar ekliyorsun? (Eksi yazarsan çıkarır)</p><input class="amtin num" id="gAdd" inputmode="decimal" placeholder="0 ₺"><button class="btn" data-a="ok">Ekle</button>`, ev => {
+    const gc=CUR[g.cur]?g.cur:'TRY', u=gc==='TRY'?'₺':CUR[gc].u;
+    openSheet(`${g.emoji} ${esc(g.name)}`, `<p class="sub">Hedefe ne kadar ${gc==='TRY'?'ekliyorsun':`<b>${esc(CUR[gc].n.replace(/^\S+ /,''))}</b> ekliyorsun`}? (Eksi yazarsan çıkarır)</p><input class="amtin num" id="gAdd" inputmode="decimal" placeholder="0 ${u}"><p class="note" id="gAddConv" style="text-align:center;margin:0 0 12px"></p><button class="btn" data-a="ok">Ekle</button>`, ev => {
       if(!ev.target.closest('[data-a=ok]')) return; const v=parseAmt($('#gAdd').value.replace('−','-')); if(!v) return toast('Tutar yaz');
       const before=(g.saved||0); g.saved=Math.max(0,before+v); save(); closeSheet(); renderAll(); buzz();
-      toast(before<g.target && g.saved>=g.target ? `🎉 "${g.name}" hedefine ulaştın!` : `${fmt(v,true)} → %${Math.round(Math.min(1,g.saved/g.target)*100)}`);
-    }); setTimeout(()=>$('#gAdd')?.focus(),300); return; }
+      toast(before<g.target && g.saved>=g.target ? `🎉 "${g.name}" hedefine ulaştın!` : `${v>0?'+':''}${fmtCur(v,gc)} → %${Math.round(Math.min(1,g.saved/g.target)*100)}`);
+    });
+    const u2 = () => { const el=$('#gAddConv'); if(el) el.textContent = gc==='TRY' ? '' : convLine(parseAmt($('#gAdd').value.replace('−','-')), gc); };
+    $('#gAdd').oninput = u2; u2(); ensureRate(gc, u2);
+    setTimeout(()=>$('#gAdd')?.focus(),300); return; }
   const r=e.target.closest('[data-goal]'); if(r) goalForm(S.goals.find(x=>x.id===r.dataset.goal));
 };
 
